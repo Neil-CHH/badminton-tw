@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>賽事 - 羽球賽事資料庫</title>
+<meta name="theme-color" content="#1a7a4f">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <button class="back" onclick="history.length > 1 ? history.back() : location.href='./index.html'">‹</button>
+  <h1 id="title">賽事</h1>
+</header>
+<main class="container">
+  <div id="out" class="loading">載入中…</div>
+</main>
+<script src="./js/common.js"></script>
+<script>
+const oid = qs("id");
+const PAGE = 150;
+let T = null, shown = PAGE;
+
+function matchSideHTML(m, side, isWinner) {
+  const unit = m["team" + side] || "";
+  const names = new Set();
+  (m.scoreinfo || []).forEach(si => splitMembers(si["member" + side]).forEach(n => names.add(n)));
+  return `<div class="side ${side === "B" ? "B" : ""} ${isWinner ? "winner" : ""}">
+    <div class="pname">${[...names].map(playerLink).join("、") || "—"}</div>
+    <div class="unit">${unit ? unitLink(unit) : ""}</div></div>`;
+}
+
+function matchRow(m) {
+  const isTeam = m.HeadGroup === "團體";
+  const games = (m.scoreinfo || []).map(si =>
+    `<b>${esc(si.scoreA)}:${esc(si.scoreB)}</b>`).join("、");
+  const total = isTeam ? `${esc(m.Asidescore)} : ${esc(m.Bsidescore)}` :
+    (m.scoreinfo?.length ? `${esc(m.Asidescore)}:${esc(m.Bsidescore)}` : "—");
+  return `<div class="mrow">
+    <div class="head">
+      <span>${esc(baseGroup(m.groupName))}・${esc(m.matchtype || "")}</span>
+      <span>${esc(fmtDate(m.date))} ${esc(m.time || "")}・${esc(m.stadium || "")}</span>
+    </div>
+    <div class="vs">
+      ${matchSideHTML(m, "A", m.winner === "A")}
+      <div class="score">${total}</div>
+      ${matchSideHTML(m, "B", m.winner === "B")}
+    </div>
+    <div class="games">${isTeam ? "各點" : "局分"}:${games || "—"}${m.abstain ? `・${esc(m.abstain)}` : ""}</div>
+  </div>`;
+}
+
+function filteredMatches() {
+  const kw = document.getElementById("m-kw")?.value.trim() || "";
+  const grp = document.getElementById("m-group")?.value || "";
+  let rows = T.matches || [];
+  if (grp) rows = rows.filter(m => baseGroup(m.groupName) === grp);
+  if (kw) rows = rows.filter(m =>
+    (m.teamA || "").includes(kw) || (m.teamB || "").includes(kw) ||
+    (m.scoreinfo || []).some(si =>
+      (si.memberA || "").includes(kw) || (si.memberB || "").includes(kw)));
+  return rows;
+}
+
+function renderMatches() {
+  const rows = filteredMatches();
+  const el = document.getElementById("mlist");
+  el.innerHTML = rows.slice(0, shown).map(matchRow).join("") ||
+    `<div class="empty">無符合的場次</div>`;
+  const more = document.getElementById("m-more");
+  if (rows.length > shown) {
+    more.style.display = "block";
+    more.textContent = `顯示更多(${shown} / ${rows.length})`;
+  } else more.style.display = "none";
+}
+
+function render() {
+  document.getElementById("title").textContent = T.name;
+  document.title = `${T.name} - 羽球賽事資料庫`;
+  let html = "";
+
+  if (T.image) html += `<div class="card hero"><img src="${esc(T.image)}" alt="" loading="lazy"
+    onerror="this.parentElement.style.display='none'"></div>`;
+
+  html += `<div class="card"><div class="pad">
+    ${statusBadge(T.status)} <span class="chip off">${esc(T.city)}</span>
+    <div class="kv" style="margin-top:10px">
+      <span class="k">比賽日期</span><span>${fmtRange(T.dateStart, T.dateEnd)}</span>
+      <span class="k">報名期間</span><span>${fmtRange(T.registerStart, T.registerEnd)}</span>
+      <span class="k">比賽地點</span><span>${esc(T.venue || "—")}</span>
+    </div>
+    <div style="margin-top:10px">
+      <a class="btn-link" target="_blank" rel="noopener"
+         href="https://livescore.efsoft.net/golivequery.php?openid=${encodeURIComponent(T.openid)}">🔗 官方賽事查詢</a>
+      ${T.status === "registering" ? `<a class="btn-link" target="_blank" rel="noopener"
+         href="https://ef-regist.com/chkagreement/agreement.php?id=${encodeURIComponent(T.openid)}">📝 線上報名</a>` : ""}
+    </div>
+  </div></div>`;
+
+  const r = T.regulation;
+  if (r) {
+    html += `<h2 class="sec">📜 競賽規程</h2><div class="card"><div class="pad"><div class="kv">
+      ${r.organizer ? `<span class="k">主辦單位</span><span>${esc(r.organizer)}</span>` : ""}
+      ${r.ball ? `<span class="k">比賽用球</span><span>${esc(r.ball)}</span>` : ""}
+      ${r.fee ? `<span class="k">報名費用</span><span>${esc(r.fee)}</span>` : ""}
+      ${r.souvenir ? `<span class="k">紀念品</span><span>${esc(r.souvenir)}</span>` : ""}
+      ${r.awards ? `<span class="k">得獎獎勵</span><span style="white-space:pre-wrap">${esc(r.awards)}</span>` : ""}
+      ${r.notes ? `<span class="k">備註</span><span style="white-space:pre-wrap">${esc(r.notes)}</span>` : ""}
+    </div>${r.pdf ? `<div style="margin-top:10px"><a class="btn-link" target="_blank" rel="noopener" href="${esc(r.pdf)}">📄 規程 PDF</a></div>` : ""}
+    </div></div>`;
+  } else {
+    html += `<div class="note">尚無規程資料(用球/紀念品/獎勵等)。可將規程 PDF 交給 Claude 以 /badminton-import 匯入補充。</div>`;
+  }
+  if (T.resultPdf) {
+    html += `<div style="margin:6px 0"><a class="btn-link" target="_blank" rel="noopener" href="${esc(T.resultPdf)}">📄 總成績紀錄 PDF</a></div>`;
+  }
+
+  const docs = T.documents || [];
+  if (docs.length) {
+    html += `<h2 class="sec">📁 賽事文件 <small>(連至官方)</small></h2><div class="card">` +
+      docs.map(d => {
+        const icon = d.type === "規程" ? "📜" : d.type === "成績" ? "🏆" : "📄";
+        return `<a class="srow" target="_blank" rel="noopener" href="${esc(d.url)}">
+          <div><div>${icon} ${esc(d.title)}</div></div>
+          <div class="cnt">${esc(fmtDate(d.date))}</div></a>`;
+      }).join("") + `</div>`;
+  }
+
+  if ((T.standings || []).length) {
+    html += `<h2 class="sec">🏆 各組名次</h2><div class="card"><table class="plain">
+      <tr><th>組別</th><th>名次</th><th>單位</th><th>成員</th></tr>` +
+      T.standings.map(s => `<tr>
+        <td>${esc(s.group)}</td>
+        <td class="${rankClass(s.rank)}">${esc(rankLabel(s.rank))}</td>
+        <td>${s.unit ? unitLink(s.unit) : "—"}</td>
+        <td>${(s.members || []).flatMap(splitMembers).map(playerLink).join("、") || "—"}</td>
+      </tr>`).join("") + `</table></div>
+      <div class="note">名次由決賽比分自動推導${T.standings.some(s => s.source === "pdf") ? ",部分由官方成績 PDF 匯入" : ""};循環賽制組別可能無法推導。</div>`;
+  }
+
+  const groups = T.groups || [];
+  if (groups.length) {
+    html += `<h2 class="sec">🎯 競賽組別 <small>(${groups.length})</small></h2>
+      <div class="card"><div class="pad">` +
+      groups.map(g => g.drawUrl
+        ? `<a class="chip" target="_blank" rel="noopener" href="${esc(g.drawUrl)}">${esc(g.name)} ↗</a>`
+        : `<span class="chip off">${esc(g.name)}</span>`).join("") +
+      `<div class="note" style="margin-bottom:0">點組別可開官方籤表/晉級圖</div></div></div>`;
+  }
+
+  if ((T.matches || []).length) {
+    const gnames = [...new Set(T.matches.map(m => baseGroup(m.groupName)))].filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, "zh-Hant"));
+    html += `<h2 class="sec">📊 逐場比分 <small>(${T.matches.length} 場)</small></h2>
+      <div class="filters">
+        <select id="m-group"><option value="">全部組別</option>
+          ${gnames.map(g => `<option>${esc(g)}</option>`).join("")}</select>
+        <input type="search" id="m-kw" placeholder="選手姓名或單位">
+      </div>
+      <div class="card" id="mlist"></div>
+      <button class="btn-more" id="m-more" style="display:none"></button>`;
+  } else if (T.status !== "registering") {
+    html += `<div class="note">此賽事未使用線上計分系統,無逐場比分資料。</div>`;
+  }
+
+  document.getElementById("out").innerHTML = html;
+  if ((T.matches || []).length) {
+    document.getElementById("m-group").onchange = () => { shown = PAGE; renderMatches(); };
+    document.getElementById("m-kw").oninput = () => { shown = PAGE; renderMatches(); };
+    document.getElementById("m-more").onclick = () => { shown += PAGE; renderMatches(); };
+    renderMatches();
+  }
+}
+
+async function init() {
+  renderNav("matches");
+  T = await loadJSON(`tournaments/${oid}.json`);
+  render();
+}
+init().catch(e => document.getElementById("out").innerHTML =
+  `<div class="empty">資料載入失敗:${esc(e.message)}</div>`);
+</script>
+</body>
+</html>

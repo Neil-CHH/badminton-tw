@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>關於 - 羽球賽事資料庫</title>
+<meta name="theme-color" content="#1a7a4f">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+<header class="topbar"><h1>ℹ️ 關於</h1></header>
+<main class="container">
+  <div class="card"><div class="pad">
+    <p><b>🏸 羽球賽事資料庫</b></p>
+    <p>收錄台灣各縣市羽球賽事的競賽資訊、逐場比分與各組名次,支援以「選手」或「學校/單位」為中心的跨賽事查詢。</p>
+    <div class="kv">
+      <span class="k">資料來源</span><span><a href="https://mylivescore.tw/matches.html" target="_blank" rel="noopener">MY Livescore 競賽資訊系統</a></span>
+      <span class="k">收錄範圍</span><span>2025 年 1 月起的羽球賽事(歷史賽事可由 PDF 匯入)</span>
+      <span class="k">更新頻率</span><span>每月手動更新</span>
+      <span class="k">資料更新</span><span id="last">—</span>
+    </div>
+    <p class="note">名次為決賽比分自動推導,可能與官方公告不同;單位名稱為報名時自由填寫,同一學校可能有多種寫法。一切以官方公告為準。</p>
+  </div></div>
+</main>
+<script src="./js/common.js"></script>
+<script>
+renderNav("about");
+loadJSON("index.json").then(idx => {
+  const latest = idx.map(t => t.dateStart).sort().reverse()[0];
+  document.getElementById("last").textContent =
+    `共 ${idx.length} 場賽事,最新賽事日期 ${latest || "—"}`;
+}).catch(() => {});
+</script>
+</body>
+</html>

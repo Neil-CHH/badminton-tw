@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>羽球賽事資料庫</title>
+<meta name="theme-color" content="#1a7a4f">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+<header class="topbar"><h1>🏸 羽球賽事資料庫</h1></header>
+<main class="container">
+  <div class="tabs" id="tabs">
+    <button data-st="registering">報名中</button>
+    <button data-st="ongoing">進行中</button>
+    <button data-st="finished" class="active">已結束</button>
+  </div>
+  <div class="filters">
+    <select id="f-city"><option value="">縣市</option></select>
+    <select id="f-year"><option value="">年份</option></select>
+    <select id="f-month"><option value="">月份</option></select>
+    <input type="search" id="f-kw" placeholder="賽事名稱關鍵字">
+  </div>
+  <div id="list" class="loading">載入中…</div>
+</main>
+<script src="./js/common.js"></script>
+<script>
+let all = [], status = "finished";
+
+function applyFilters() {
+  const city = document.getElementById("f-city").value;
+  const year = document.getElementById("f-year").value;
+  const month = document.getElementById("f-month").value;
+  const kw = document.getElementById("f-kw").value.trim();
+  let rows = all.filter(t => t.status === status);
+  if (city) rows = rows.filter(t => t.city === city);
+  if (year) rows = rows.filter(t => (t.dateStart || "").startsWith(year));
+  if (month) rows = rows.filter(t => (t.dateStart || "").slice(5, 7) === month);
+  if (kw) rows = rows.filter(t => t.name.includes(kw));
+  render(rows);
+}
+
+function render(rows) {
+  const el = document.getElementById("list");
+  if (!rows.length) { el.innerHTML = `<div class="empty">查無賽事</div>`; return; }
+  el.innerHTML = rows.map(t => `
+    <a class="card match-card" href="./tournament.html?id=${encodeURIComponent(t.openid)}">
+      <div class="thumb" ${t.image ? `style="background-image:url('${esc(t.image)}')"` : ""}></div>
+      <div class="info">
+        ${statusBadge(t.status)} <span class="chip off">${esc(t.city)}</span>
+        <div class="name">${esc(t.name)}</div>
+        <div class="meta">
+          <span>📅 ${fmtRange(t.dateStart, t.dateEnd)}</span>
+          <span>📍 ${esc(t.venue || "—")}</span>
+          ${t.status === "registering" && fmtDate(t.registerEnd)
+            ? `<span>⏰ 報名至 ${fmtDate(t.registerEnd)}</span>` : ""}
+          ${t.hasMatches ? `<span>✅ 含比分紀錄</span>` : ""}
+        </div>
+      </div>
+    </a>`).join("");
+}
+
+async function init() {
+  renderNav("matches");
+  all = await loadJSON("index.json");
+
+  const cities = [...new Set(all.map(t => t.city))].sort();
+  document.getElementById("f-city").innerHTML +=
+    cities.map(c => `<option>${esc(c)}</option>`).join("");
+  const years = [...new Set(all.map(t => (t.dateStart || "").slice(0, 4)).filter(Boolean))].sort().reverse();
+  document.getElementById("f-year").innerHTML +=
+    years.map(y => `<option>${esc(y)}</option>`).join("");
+  document.getElementById("f-month").innerHTML +=
+    Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, "0"))
+      .map(m => `<option value="${m}">${Number(m)}月</option>`).join("");
+
+  document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
+    status = b.dataset.st;
+    document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("active", x === b));
+    applyFilters();
+  });
+  ["f-city", "f-year", "f-month"].forEach(id =>
+    document.getElementById(id).onchange = applyFilters);
+  document.getElementById("f-kw").oninput = applyFilters;
+
+  // 預設停在資料最多的「已結束」;若有進行中賽事則優先顯示
+  if (all.some(t => t.status === "ongoing")) {
+    document.querySelector('#tabs button[data-st="ongoing"]').click();
+  } else {
+    applyFilters();
+  }
+}
+init().catch(e => document.getElementById("list").innerHTML =
+  `<div class="empty">資料載入失敗:${esc(e.message)}</div>`);
+</script>
+</body>
+</html>

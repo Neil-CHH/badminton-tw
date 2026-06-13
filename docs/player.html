@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>選手 - 羽球賽事資料庫</title>
+<meta name="theme-color" content="#1a7a4f">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <button class="back" onclick="history.length > 1 ? history.back() : location.href='./search.html'">‹</button>
+  <h1 id="title">選手</h1>
+</header>
+<main class="container">
+  <div id="out" class="loading">載入中…</div>
+</main>
+<script src="./js/common.js"></script>
+<script>
+const name = qs("name");
+let tmap;
+
+/* 該選手在一場比賽的某一局是否上場 */
+function inGame(si, side) { return splitMembers(si["member" + side]).includes(name); }
+
+function renderMatchRow(m) {
+  // 找出選手在哪一側(以任一局為準)
+  let mySide = null;
+  for (const si of m.scoreinfo || []) {
+    if (inGame(si, "A")) { mySide = "A"; break; }
+    if (inGame(si, "B")) { mySide = "B"; break; }
+  }
+  if (!mySide) return "";
+  const opSide = mySide === "A" ? "B" : "A";
+  const won = m.winner === mySide;
+  const games = (m.scoreinfo || []).filter(si => inGame(si, mySide));
+  const isTeam = m.HeadGroup === "團體";
+
+  // 團體賽:顯示選手自己上場的點;個人賽:單一局即整場
+  const opponents = new Set();
+  games.forEach(si => splitMembers(si["member" + opSide]).forEach(n => opponents.add(n)));
+  const partner = new Set();
+  games.forEach(si => splitMembers(si["member" + mySide]).forEach(n => { if (n !== name) partner.add(n); }));
+
+  const myUnit = m["team" + mySide] || "";
+  const opUnit = m["team" + opSide] || "";
+  const gameScores = games.map(si => {
+    const a = mySide === "A" ? si.scoreA : si.scoreB;
+    const b = mySide === "A" ? si.scoreB : si.scoreA;
+    const w = Number(a) > Number(b);
+    return `<b style="color:${w ? "var(--win)" : "var(--lose)"}">${esc(a)}:${esc(b)}</b>`;
+  }).join("、");
+
+  return `<div class="mrow">
+    <div class="head">
+      <span>${esc(baseGroup(m.groupName))}・${esc(m.matchtype || "")}</span>
+      <span>${esc(fmtDate(m.date))} ${esc(m.time || "")}</span>
+    </div>
+    <div class="vs">
+      <div class="side ${won ? "winner" : ""}">
+        <div class="pname">${esc(name)}${partner.size ? " / " + [...partner].map(playerLink).join("、") : ""}</div>
+        <div class="unit">${myUnit ? unitLink(myUnit) : ""}</div>
+      </div>
+      <div class="score">${won ? "勝" : (m.winner ? "負" : "—")}</div>
+      <div class="side B ${!won && m.winner ? "winner" : ""}">
+        <div class="pname">${[...opponents].map(playerLink).join("、") || esc(opUnit) || "—"}</div>
+        <div class="unit">${opUnit ? unitLink(opUnit) : ""}</div>
+      </div>
+    </div>
+    <div class="games">${isTeam ? `團體賽(我方上場點)・` : ""}局分:${gameScores || "—"}
+      ${m.abstain ? `・${esc(m.abstain)}` : ""}</div>
+  </div>`;
+}
+
+async function expandTourn(oid, container) {
+  container.innerHTML = `<div class="loading">載入比分中…</div>`;
+  try {
+    const t = await loadJSON(`tournaments/${oid}.json`);
+    const rows = (t.matches || []).map(renderMatchRow).filter(Boolean);
+    container.innerHTML = rows.join("") ||
+      `<div class="note" style="padding:10px 14px">此賽事無該選手的比分紀錄</div>`;
+  } catch (e) {
+    container.innerHTML = `<div class="note" style="padding:10px 14px">載入失敗:${esc(e.message)}</div>`;
+  }
+}
+
+async function init() {
+  renderNav("search");
+  document.getElementById("title").textContent = `👤 ${name}`;
+  document.title = `${name} - 羽球賽事資料庫`;
+  const [playersDB, _tmap] = await Promise.all([loadJSON("players.json"), tournMap()]);
+  tmap = _tmap;
+  const recs = playersDB.players[name];
+  const out = document.getElementById("out");
+  if (!recs) { out.innerHTML = `<div class="empty">查無選手「${esc(name)}」</div>`; return; }
+
+  const units = new Set(); recs.forEach(r => r.units.forEach(u => units.add(u)));
+  let html = "";
+  if (units.size > 1) {
+    html += `<div class="note">⚠️ 此姓名出現於多個單位(可能為同名不同人,請依單位判別):
+      ${[...units].map(unitLink).join("、")}</div>`;
+  } else if (units.size === 1) {
+    html += `<div class="note">所屬單位:${unitLink([...units][0])}</div>`;
+  }
+
+  const ranks = playersDB.ranks[name] || [];
+  if (ranks.length) {
+    const sorted = [...ranks].sort((a, b) =>
+      ((tmap[b.openid]?.dateStart) || "").localeCompare((tmap[a.openid]?.dateStart) || "") || a.rank - b.rank);
+    html += `<h2 class="sec">🏆 成績總覽 <small>(${ranks.length})</small></h2>
+      <div class="card"><table class="plain">
+      <tr><th>名次</th><th>組別</th><th>賽事</th></tr>` +
+      sorted.map(r => {
+        const t = tmap[r.openid];
+        return `<tr><td class="${rankClass(r.rank)}">${esc(rankLabel(r.rank))}</td>
+          <td>${esc(r.group)}<div style="font-size:12px;color:var(--text-2)">${esc(r.unit || "")}</div></td>
+          <td>${t ? tournLink(r.openid, t.name) : esc(r.openid)}
+            <div style="font-size:12px;color:var(--text-2)">${t ? fmtDate(t.dateStart) : ""}</div></td></tr>`;
+      }).join("") + `</table></div>`;
+  }
+
+  const sortedRecs = [...recs].sort((a, b) =>
+    ((tmap[b.openid]?.dateStart) || "").localeCompare((tmap[a.openid]?.dateStart) || ""));
+  html += `<h2 class="sec">📋 參賽履歷 <small>(${recs.length} 場賽事,點開看逐場比分)</small></h2>`;
+  sortedRecs.forEach(r => {
+    const t = tmap[r.openid];
+    html += `<details class="card hist" data-oid="${esc(r.openid)}">
+      <summary>
+        <span>${esc(t ? t.name : r.openid)}
+          <div style="font-weight:400;font-size:12.5px;color:var(--text-2)">
+            ${esc(r.groups.join("、"))}${r.units.length ? "・" + esc(r.units.join("、")) : ""}</div>
+        </span>
+        <span class="when">${t ? fmtDate(t.dateStart) : ""}</span>
+      </summary>
+      <div class="body"></div>
+    </details>`;
+  });
+  out.innerHTML = html;
+
+  document.querySelectorAll("details.hist").forEach(d => {
+    d.addEventListener("toggle", () => {
+      if (d.open && !d.dataset.loaded) {
+        d.dataset.loaded = "1";
+        expandTourn(d.dataset.oid, d.querySelector(".body"));
+      }
+    });
+  });
+  if (sortedRecs.length === 1) document.querySelector("details.hist").open = true;
+}
+init().catch(e => document.getElementById("out").innerHTML =
+  `<div class="empty">資料載入失敗:${esc(e.message)}</div>`);
+</script>
+</body>
+</html>

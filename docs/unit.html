@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>單位 - 羽球賽事資料庫</title>
+<meta name="theme-color" content="#1a7a4f">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <button class="back" onclick="history.length > 1 ? history.back() : location.href='./search.html'">‹</button>
+  <h1 id="title">單位</h1>
+</header>
+<main class="container">
+  <div id="variants"></div>
+  <div id="out" class="loading">載入中…</div>
+</main>
+<script src="./js/common.js"></script>
+<script>
+const name = qs("name");
+let unitsDB, tmap, selected = new Set([name]);
+
+function variantsOf(n) {
+  // 名稱互為包含者視為可能同一單位(如「崑山國小」vs「南市崑山國小」)
+  return Object.keys(unitsDB).filter(u =>
+    u !== n && (u.includes(n) || (n.length >= 2 && n.includes(u))));
+}
+
+function renderVariants() {
+  const vs = variantsOf(name);
+  const el = document.getElementById("variants");
+  if (!vs.length) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="note">相近名稱(可能是同一單位的不同寫法,點選合併檢視):</div>` +
+    vs.map(v => `<span class="chip toggle ${selected.has(v) ? "on" : ""}" data-u="${esc(v)}">${esc(v)}</span>`).join("");
+  el.querySelectorAll(".chip.toggle").forEach(c => c.onclick = () => {
+    const u = c.dataset.u;
+    selected.has(u) ? selected.delete(u) : selected.add(u);
+    renderVariants(); renderBody();
+  });
+}
+
+function renderBody() {
+  const out = document.getElementById("out");
+  const ranks = [], byTourn = {};
+  selected.forEach(u => {
+    const rec = unitsDB[u];
+    if (!rec) return;
+    rec.ranks.forEach(r => ranks.push({ ...r, unit: u }));
+    rec.t.forEach(e => {
+      const slot = byTourn[e.openid] ||= { players: new Set(), units: new Set() };
+      e.players.forEach(p => slot.players.add(p));
+      slot.units.add(u);
+    });
+  });
+
+  let html = "";
+  if (ranks.length) {
+    ranks.sort((a, b) => ((tmap[b.openid]?.dateStart) || "").localeCompare((tmap[a.openid]?.dateStart) || "") || a.rank - b.rank);
+    html += `<h2 class="sec">🏆 得獎紀錄 <small>(${ranks.length})</small></h2>
+      <div class="card"><table class="plain">
+      <tr><th>名次</th><th>組別</th><th>成員</th><th>賽事</th></tr>` +
+      ranks.map(r => {
+        const t = tmap[r.openid];
+        return `<tr>
+          <td class="${rankClass(r.rank)}">${esc(rankLabel(r.rank))}</td>
+          <td>${esc(r.group)}</td>
+          <td>${(r.members || []).map(playerLink).join("、") || "—"}</td>
+          <td>${t ? tournLink(r.openid, t.name) : esc(r.openid)}
+            <div class="sub" style="font-size:12px;color:var(--text-2)">${t ? fmtDate(t.dateStart) : ""}</div></td>
+        </tr>`;
+      }).join("") + `</table></div>`;
+  }
+
+  const oids = Object.keys(byTourn)
+    .sort((a, b) => ((tmap[b]?.dateStart) || "").localeCompare((tmap[a]?.dateStart) || ""));
+  html += `<h2 class="sec">📋 參賽履歷 <small>(${oids.length} 場賽事)</small></h2>`;
+  if (!oids.length) html += `<div class="empty">無參賽紀錄</div>`;
+  oids.forEach(oid => {
+    const t = tmap[oid], e = byTourn[oid];
+    const players = [...e.players].sort((a, b) => a.localeCompare(b, "zh-Hant"));
+    html += `<div class="card"><div class="pad">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+        <b>${t ? tournLink(oid, t.name) : esc(oid)}</b>
+        <span class="meta"><span>${t ? fmtDate(t.dateStart) : ""}</span></span>
+      </div>
+      <div class="meta" style="margin:3px 0 8px">${t ? `<span>${esc(t.city)}</span><span>📍 ${esc(t.venue || "")}</span>` : ""}</div>
+      <div>${players.map(p => `<a class="chip" href="./player.html?name=${encodeURIComponent(p)}">${esc(p)}</a>`).join("")}</div>
+    </div></div>`;
+  });
+  out.innerHTML = html;
+}
+
+async function init() {
+  renderNav("search");
+  document.getElementById("title").textContent = `🏫 ${name}`;
+  document.title = `${name} - 羽球賽事資料庫`;
+  [unitsDB, tmap] = await Promise.all([loadJSON("units.json"), tournMap()]);
+  if (!unitsDB[name]) {
+    document.getElementById("out").innerHTML = `<div class="empty">查無單位「${esc(name)}」</div>`;
+    const vs = variantsOf(name);
+    if (vs.length) { renderVariants(); }
+    return;
+  }
+  renderVariants();
+  renderBody();
+}
+init().catch(e => document.getElementById("out").innerHTML =
+  `<div class="empty">資料載入失敗:${esc(e.message)}</div>`);
+</script>
+</body>
+</html>

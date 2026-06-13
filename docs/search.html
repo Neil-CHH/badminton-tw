@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>搜尋 - 羽球賽事資料庫</title>
+<meta name="theme-color" content="#1a7a4f">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+<header class="topbar"><h1>🔍 搜尋選手 / 學校單位</h1></header>
+<main class="container">
+  <div class="searchbox">
+    <input type="search" id="q" placeholder="輸入選手姓名或學校/單位名稱" autofocus>
+  </div>
+  <div id="out"><div class="note">輸入至少 1 個字開始搜尋。例如:「崑山」會找到「南市崑山國小」等寫法不同的同一單位。</div></div>
+</main>
+<script src="./js/common.js"></script>
+<script>
+let playersDB = null, unitsDB = null, loadingP = null;
+const MAXSHOW = 60;
+
+function ensureData() {
+  if (!loadingP) {
+    loadingP = Promise.all([loadJSON("players.json"), loadJSON("units.json")])
+      .then(([p, u]) => { playersDB = p; unitsDB = u; });
+  }
+  return loadingP;
+}
+
+async function doSearch() {
+  const q = document.getElementById("q").value.trim();
+  const out = document.getElementById("out");
+  if (!q) { out.innerHTML = ""; return; }
+  if (!playersDB) {
+    out.innerHTML = `<div class="loading">首次載入索引中…</div>`;
+    await ensureData();
+  }
+  const players = Object.keys(playersDB.players)
+    .filter(n => n.includes(q)).sort((a, b) => a.localeCompare(b, "zh-Hant"));
+  const units = Object.keys(unitsDB)
+    .filter(n => n.includes(q)).sort((a, b) => a.localeCompare(b, "zh-Hant"));
+
+  let html = "";
+  if (units.length) {
+    html += `<h2 class="sec">🏫 學校 / 單位 <small>(${units.length})</small></h2><div class="card">` +
+      units.slice(0, MAXSHOW).map(u => {
+        const rec = unitsDB[u];
+        const np = new Set(); rec.t.forEach(e => e.players.forEach(p => np.add(p)));
+        return `<a class="srow" href="./unit.html?name=${encodeURIComponent(u)}">
+          <div><div>${esc(u)}</div></div>
+          <div class="cnt">${rec.t.length} 場賽事・${np.size} 位選手</div></a>`;
+      }).join("") + `</div>`;
+    if (units.length > MAXSHOW) html += `<div class="note">僅顯示前 ${MAXSHOW} 筆,請輸入更完整名稱</div>`;
+  }
+  if (players.length) {
+    html += `<h2 class="sec">👤 選手 <small>(${players.length})</small></h2><div class="card">` +
+      players.slice(0, MAXSHOW).map(n => {
+        const recs = playersDB.players[n];
+        const us = new Set(); recs.forEach(r => r.units.forEach(u => us.add(u)));
+        const rk = (playersDB.ranks[n] || []).length;
+        return `<a class="srow" href="./player.html?name=${encodeURIComponent(n)}">
+          <div><div>${esc(n)}</div>
+            <div class="sub">${esc([...us].slice(0, 3).join("、") || "—")}</div></div>
+          <div class="cnt">${recs.length} 場賽事${rk ? `・🏆${rk}` : ""}</div></a>`;
+      }).join("") + `</div>`;
+    if (players.length > MAXSHOW) html += `<div class="note">僅顯示前 ${MAXSHOW} 筆,請輸入更完整名稱</div>`;
+  }
+  if (!html) html = `<div class="empty">查無「${esc(q)}」相關的選手或單位</div>`;
+  out.innerHTML = html;
+}
+
+let timer = null;
+document.getElementById("q").addEventListener("input", () => {
+  clearTimeout(timer);
+  timer = setTimeout(() => doSearch().catch(console.error), 250);
+});
+document.getElementById("q").addEventListener("focus", ensureData, { once: true });
+renderNav("search");
+
+const initQ = qs("q");
+if (initQ) { document.getElementById("q").value = initQ; doSearch(); }
+</script>
+</body>
+</html>
