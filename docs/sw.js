@@ -1,7 +1,7 @@
 /* 羽球賽事資料庫 Service Worker
    - App shell:cache-first(版本更新時換 cache 名稱)
    - data/*.json:network-first,離線時退回快取 */
-const VERSION = "v3";
+const VERSION = "v4";
 const SHELL_CACHE = `shell-${VERSION}`;
 const DATA_CACHE = `data-${VERSION}`;
 const SHELL = [

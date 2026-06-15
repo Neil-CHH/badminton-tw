@@ -36,6 +36,15 @@ STATUS_NAME = {"1": "registering", "2": "ongoing", "3": "finished"}
 EXCLUDE_PAT = re.compile(r"匹克球|桌球|研習|裁判|柔道")
 
 
+def derive_category(name):
+    """由賽名推導賽事類別(排名賽攸關晉升甲組,前端會特別標示)。"""
+    if "排名賽" in name:
+        return "排名賽"
+    if "錦標賽" in name:
+        return "錦標賽"
+    return None
+
+
 def post_json(url, payload, origin, retries=2):
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST")
@@ -258,6 +267,8 @@ def scrape_tournament(api, info, status_key, existing):
         "venue": info.get("Venus", ""),
         "image": info.get("Site_Pic", ""),
         "isSystem": info.get("IsSystem") == "1",
+        "category": derive_category(info["MName"]) or (existing or {}).get("category"),
+        "promotion": (existing or {}).get("promotion"),
         "regulation": (existing or {}).get("regulation"),
         "groups": (existing or {}).get("groups", []),
         "matches": (existing or {}).get("matches", []),
@@ -281,6 +292,10 @@ def scrape_tournament(api, info, status_key, existing):
         d = api.live("matches", openid)
         time.sleep(0.5)
         schedule = (d.get("result", {}) or {}).get("schedule", []) or []
+
+    # 部分 isSystem 賽事(如全國排名賽)API 不提供逐場比分 → schedule 為空。
+    # 此時保留既有(多為 PDF 匯入的)groups / matches / standings,不覆蓋。
+    if record["isSystem"] and status_key in ("2", "3") and schedule:
         record["matches"] = schedule
 
         # 由比分資料補組別 head(單打/雙打/團體)

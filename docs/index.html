@@ -51,6 +51,7 @@ function render(rows) {
       <div class="thumb" ${t.image ? `style="background-image:url('${esc(t.image)}')"` : ""}></div>
       <div class="info">
         ${statusBadge(t.status)} <span class="chip off">${esc(t.city)}</span>
+        ${t.category === "排名賽" ? `<span class="chip cat">排名賽</span>` : ""}
         <div class="name">${esc(t.name)}</div>
         <div class="meta">
           <span>📅 ${fmtRange(t.dateStart, t.dateEnd)}</span>

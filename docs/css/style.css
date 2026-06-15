@@ -115,6 +115,16 @@ a.chip:active { background: #d6e8de; }
 .chip.off { background: #f0f1f0; color: var(--text-2); }
 .chip.toggle { cursor: pointer; user-select: none; border: 1px solid transparent; }
 .chip.toggle.on { background: var(--primary); color: #fff; }
+.chip.cat { background: #fbf2d9; color: #8a6d12; font-weight: 600; }
+
+/* ---------- 排名賽:晉升甲組 ---------- */
+.promo-card { border-left: 4px solid var(--gold); }
+.promo-title { font-weight: 800; color: #8a6d12; margin-bottom: 4px; }
+.chip-promo {
+  display: inline-block; background: var(--gold); color: #fff;
+  border-radius: 9px; padding: 0 7px; font-size: 11px; font-weight: 700; vertical-align: 1px;
+}
+table.plain tr.promoted td { background: #fdf8e8; }
 
 /* ---------- section title ---------- */
 h2.sec { font-size: 15px; margin: 18px 2px 8px; color: var(--primary-dark); }

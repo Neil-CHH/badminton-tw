@@ -51,6 +51,7 @@ def main():
             "dateEnd": t.get("dateEnd", ""),
             "venue": t.get("venue", ""),
             "image": t.get("image", ""),
+            "category": t.get("category"),
             "hasMatches": bool(t.get("matches")),
             "hasRegulation": bool(t.get("regulation")),
             "groupCount": len(t.get("groups", [])),
@@ -82,18 +83,26 @@ def main():
                         add_unit(unit, nm)
 
         for s in t.get("standings", []):
+            # 雙打跨單位時 memberUnits 與 members 對齊,逐位歸屬正確單位;
+            # 否則全部歸屬 s.unit(單打或同單位雙打)。
+            members = s.get("members", [])
+            munits = s.get("memberUnits") or []
             all_members = []
-            for nm in s.get("members", []):
+            seen_units = []
+            for i, nm in enumerate(members):
+                unit_i = munits[i] if i < len(munits) else s.get("unit", "")
                 for nm2 in split_members(nm):
                     all_members.append(nm2)
-                    add_player(nm2, s.get("unit", ""), s.get("group", ""))
-                    add_unit(s.get("unit", ""), nm2)
+                    add_player(nm2, unit_i, s.get("group", ""))
+                    add_unit(unit_i, nm2)
                     ranks.setdefault(nm2, []).append({
                         "openid": oid, "group": s.get("group", ""),
-                        "rank": s.get("rank"), "unit": s.get("unit", ""),
+                        "rank": s.get("rank"), "unit": unit_i,
                     })
-            if s.get("unit"):
-                unit_ranks.setdefault(s["unit"], []).append({
+                if unit_i and unit_i not in seen_units:
+                    seen_units.append(unit_i)
+            for unit in seen_units:
+                unit_ranks.setdefault(unit, []).append({
                     "openid": oid, "group": s.get("group", ""),
                     "rank": s.get("rank"), "members": all_members,
                 })
