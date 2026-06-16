@@ -101,6 +101,10 @@ def main():
                     })
                 if unit_i and unit_i not in seen_units:
                     seen_units.append(unit_i)
+            # 團體賽:只有單位、無個別選手 → 仍登錄該單位名次
+            if not members and s.get("unit"):
+                add_unit(s["unit"], None)
+                seen_units.append(s["unit"])
             for unit in seen_units:
                 unit_ranks.setdefault(unit, []).append({
                     "openid": oid, "group": s.get("group", ""),
