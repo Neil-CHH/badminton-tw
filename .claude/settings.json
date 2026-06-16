@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -X utf8 scripts/pdf_render.py \"https://go.mylivescore.link/uploads/11443/114年全國大專校院運動會羽球分區錦標賽_北區_總成績紀錄.pdf\" --pages 33 --rows --scale 3 --out /tmp/q552163r)",
+      "Bash(python -X utf8 scripts/pdf_render.py \"https://go.mylivescore.link/uploads/11533/115年全國中等學校運動會羽球賽_資格賽_總成績紀錄.pdf\" --pages 40 --rows --scale 3 --out /tmp/q694004r)",
+      "Read(//c/Users/ssken/AppData/Local/Temp/q552163r/**)",
+      "Read(//c/Users/ssken/AppData/Local/Temp/q531555r/**)"
+    ]
+  }
+}
