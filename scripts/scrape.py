@@ -274,13 +274,16 @@ def scrape_tournament(api, info, status_key, existing):
         "matches": (existing or {}).get("matches", []),
         "standings": (existing or {}).get("standings", []),
         "resultPdf": (existing or {}).get("resultPdf"),
+        "documents": (existing or {}).get("documents"),  # 官方文件連結由 fetch_docs 維護,重抓時保留
         "lastUpdated": date.today().isoformat(),
     }
 
-    if record["isSystem"] and status_key in ("2", "3"):
+    groups, schedule = [], []
+    # 不論 isSystem,已結束/進行中賽事都試抓 items/matches。實測許多 isSystem=False
+    # 的賽事(地方賽、休閒賽)API 仍回傳完整逐場比分,僅少數真的回空(改以 PDF 補名次)。
+    if status_key in ("2", "3"):
         d = api.live("items", openid)
         time.sleep(0.5)
-        groups = []
         for g in (d.get("result", {}) or {}).get("matchiteminfo", []) or []:
             gname = g.get("GroupName", "")
             head = None
@@ -293,9 +296,9 @@ def scrape_tournament(api, info, status_key, existing):
         time.sleep(0.5)
         schedule = (d.get("result", {}) or {}).get("schedule", []) or []
 
-    # 部分 isSystem 賽事(如全國排名賽)API 不提供逐場比分 → schedule 為空。
+    # 部分賽事(如全國排名賽、全中運會內賽)API 不提供逐場比分 → schedule 為空。
     # 此時保留既有(多為 PDF 匯入的)groups / matches / standings,不覆蓋。
-    if record["isSystem"] and status_key in ("2", "3") and schedule:
+    if schedule:
         record["matches"] = schedule
 
         # 由比分資料補組別 head(單打/雙打/團體)
@@ -352,7 +355,7 @@ def main():
                 or existing is None
                 or existing.get("status") != STATUS_NAME[status_key]
                 or status_key == "2"  # 進行中的每次都更新比分
-                or (status_key == "3" and existing.get("isSystem") and not existing.get("matches"))
+                or (status_key == "3" and not existing.get("matches"))  # 已結束但尚無比分 → 重試抓
             )
             if not need:
                 skipped += 1
