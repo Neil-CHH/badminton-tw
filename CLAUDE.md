@@ -23,7 +23,9 @@
   1-22(對照表在 scrape.py)。回應含未跳脫換行,需 `replace(\n→\\n)` 後再 JSON parse。
 - 選手賽事 API host 是 IP(`http://172.105.210.232/liveresult/`),由
   `https://livescore.efsoft.net/golivequery.php?openid=X` redirect 動態解析。
-  `api:items` 組別、`api:matches` 逐場比分(僅 IsSystem=1 賽事有)。
+  `api:items` 組別、`api:matches` 逐場比分。**IsSystem 旗標不可靠**:許多 IsSystem=0
+  的地方賽/休閒賽 API 仍回傳完整逐場比分,故 scrape.py 對已結束/進行中賽事一律試抓
+  (2026-06 起);少數賽事(全中運會內賽、全運資格賽、部分選拔賽)才真的回空,需 PDF 補。
 - 籤表:`http://livescore.mylivescore.tw/draws/{openid}/{groupid}.html`(直接外連)。
 - **賽事文件 PDF**(規程/總成績紀錄/賽程表):`POST https://go.mylivescore.link/links.php`
   body `{"OpenID":openid,"api":"news","token":...}`(token 用 `{"Account":"linktree","api":"gtoken"}`,
