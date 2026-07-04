@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>羽球賽事資料庫</title>
 <meta name="theme-color" content="#1a7a4f">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1b5c40">
 <link rel="manifest" href="./manifest.json">
 <link rel="icon" href="./icons/icon-192.png">
 <link rel="apple-touch-icon" href="./icons/icon-192.png">
@@ -30,7 +31,23 @@
 <script>
 let all = [], status = "finished";
 
+/* 把目前的分頁與篩選寫進網址,返回時才不會重置 */
+function writeURL() {
+  const p = new URLSearchParams();
+  p.set("st", status);
+  const city = document.getElementById("f-city").value;
+  const year = document.getElementById("f-year").value;
+  const month = document.getElementById("f-month").value;
+  const kw = document.getElementById("f-kw").value.trim();
+  if (city) p.set("city", city);
+  if (year) p.set("year", year);
+  if (month) p.set("month", month);
+  if (kw) p.set("kw", kw);
+  history.replaceState(null, "", `?${p.toString()}`);
+}
+
 function applyFilters() {
+  writeURL();
   const city = document.getElementById("f-city").value;
   const year = document.getElementById("f-year").value;
   const month = document.getElementById("f-month").value;
@@ -40,7 +57,21 @@ function applyFilters() {
   if (year) rows = rows.filter(t => (t.dateStart || "").startsWith(year));
   if (month) rows = rows.filter(t => (t.dateStart || "").slice(5, 7) === month);
   if (kw) rows = rows.filter(t => t.name.includes(kw));
+  // 報名中:快截止的排前面,方便報名
+  if (status === "registering") {
+    rows = [...rows].sort((a, b) =>
+      (a.registerEnd || "9999").localeCompare(b.registerEnd || "9999"));
+  }
   render(rows);
+}
+
+function deadlineHTML(t) {
+  const end = fmtDate(t.registerEnd);
+  if (!end) return "";
+  const days = Math.ceil((new Date(t.registerEnd) - Date.now()) / 86400000);
+  if (days < 0) return `<span class="deadline-over">⏰ 報名已截止</span>`;
+  if (days <= 7) return `<span class="deadline-soon">⏰ 報名至 ${end}(剩 ${days} 天)</span>`;
+  return `<span>⏰ 報名至 ${end}</span>`;
 }
 
 function render(rows) {
@@ -48,7 +79,10 @@ function render(rows) {
   if (!rows.length) { el.innerHTML = `<div class="empty">查無賽事</div>`; return; }
   el.innerHTML = rows.map(t => `
     <a class="card match-card" href="./tournament.html?id=${encodeURIComponent(t.openid)}">
-      <div class="thumb" ${t.image ? `style="background-image:url('${esc(t.image)}')"` : ""}></div>
+      ${t.image
+        ? `<img class="thumb" loading="lazy" src="${esc(t.image)}" alt=""
+             onerror="this.style.visibility='hidden'">`
+        : `<div class="thumb"></div>`}
       <div class="info">
         ${statusBadge(t.status)} <span class="chip off">${esc(t.city)}</span>
         ${t.category === "排名賽" ? `<span class="chip cat">排名賽</span>` : ""}
@@ -56,8 +90,7 @@ function render(rows) {
         <div class="meta">
           <span>📅 ${fmtRange(t.dateStart, t.dateEnd)}</span>
           <span>📍 ${esc(t.venue || "—")}</span>
-          ${t.status === "registering" && fmtDate(t.registerEnd)
-            ? `<span>⏰ 報名至 ${fmtDate(t.registerEnd)}</span>` : ""}
+          ${t.status === "registering" ? deadlineHTML(t) : ""}
           ${t.hasMatches ? `<span>✅ 含比分紀錄</span>` : ""}
         </div>
       </div>
@@ -87,8 +120,17 @@ async function init() {
     document.getElementById(id).onchange = applyFilters);
   document.getElementById("f-kw").oninput = applyFilters;
 
-  // 預設停在資料最多的「已結束」;若有進行中賽事則優先顯示
-  if (all.some(t => t.status === "ongoing")) {
+  // 從網址還原上次的分頁與篩選(返回此頁時不重置)
+  const p = new URLSearchParams(location.search);
+  if (p.get("city")) document.getElementById("f-city").value = p.get("city");
+  if (p.get("year")) document.getElementById("f-year").value = p.get("year");
+  if (p.get("month")) document.getElementById("f-month").value = p.get("month");
+  if (p.get("kw")) document.getElementById("f-kw").value = p.get("kw");
+  const st = p.get("st");
+  if (["registering", "ongoing", "finished"].includes(st)) {
+    document.querySelector(`#tabs button[data-st="${st}"]`).click();
+  } else if (all.some(t => t.status === "ongoing")) {
+    // 預設停在資料最多的「已結束」;若有進行中賽事則優先顯示
     document.querySelector('#tabs button[data-st="ongoing"]').click();
   } else {
     applyFilters();

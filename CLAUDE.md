@@ -8,11 +8,13 @@
 
 - `docs/` — PWA(GitHub Pages 站台根目錄;vanilla JS、無 build step、繁中)
   - 頁面:index(賽事列表)、search(選手+單位搜尋)、unit、player、tournament、about
-  - `data/index.json` 賽事摘要|`data/players.json` 選手索引|`data/units.json` 單位索引
+  - `data/index.json` 賽事摘要|`data/search-index.json` 輕量搜尋索引(搜尋頁唯一載入)
+  - `data/players/{0-15}.json`、`data/units/{0-15}.json` 選手/單位分片(名稱雜湊分 16 片;
+    Python `rebuild_index.shard_of` 與 JS `common.js shardOf` 演算法必須一致)
   - `data/tournaments/{openid}.json` 單場賽事完整資料(含逐場比分與官方文件連結)
   - 官方 PDF **不留底**(使用者決定):documents/regulation.pdf/resultPdf 都是外部 URL
 - `scripts/scrape.py` — API 抓取+組別標籤+名次推導(`--full` 全量)。結尾自動跑 rebuild_index
-- `scripts/rebuild_index.py` — 由 tournaments/*.json 重建三個索引(匯入後必跑)
+- `scripts/rebuild_index.py` — 由 tournaments/*.json 重建索引與分片(匯入後必跑)
 - `inbox/` — 待匯入 PDF 暫放
 
 ## mylivescore.tw API(2026-06 偵察,細節勿憑記憶,以 scrape.py 為準)
@@ -59,5 +61,8 @@ python -m http.server 8765 -d docs   # 本地預覽
 ## 注意
 
 - Windows console 編碼:python 一律 `-X utf8`,stdout 需 reconfigure(腳本已內建)。
-- players.json ~7MB(gzip 後約 1.5MB),前端僅在搜尋頁 lazy-load;若持續成長可考慮分片。
+- 選手/單位索引已分片(2026-07):搜尋頁只載 search-index.json(~1.5MB),選手/單位頁依
+  名稱雜湊載對應分片(最大單片 <1MB)。選手勝負統計(w/l)由 rebuild_index 預算進分片。
+- sw.js shell 快取為 stale-while-revalidate,改前端後不需手動升 VERSION;data 為
+  network-first + 3.5s timeout 退回快取。
 - 名次與比分為自動推導/抓取,about 頁已標注「以官方公告為準」。

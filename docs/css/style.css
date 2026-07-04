@@ -13,8 +13,46 @@
   --win: #1a7a4f;
   --lose: #c0392b;
   --gold: #c9a227;
+  --thumb-bg: #e8ece9;
+  --chip-bg: #eaf3ee;
+  --chip-bg-active: #d6e8de;
+  --chip-off-bg: #f0f1f0;
+  --cat-bg: #fbf2d9;
+  --cat-text: #8a6d12;
+  --promoted-bg: #fdf8e8;
+  --th-bg: #fafbfa;
+  --danger: #d64530;
   --radius: 12px;
   --nav-h: 58px;
+}
+
+/* 深色模式:跟隨系統設定 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --primary: #2e9465;
+    --primary-dark: #8fd0ae;
+    --bg: #131715;
+    --card: #1d2420;
+    --text: #e4e9e6;
+    --text-2: #94a19a;
+    --line: #2d352f;
+    --blue: #4d94e0;
+    --orange: #e88a3c;
+    --gray: #6b756f;
+    --win: #46bf85;
+    --lose: #e06555;
+    --gold: #d4b04a;
+    --thumb-bg: #262e29;
+    --chip-bg: #24352c;
+    --chip-bg-active: #2d4437;
+    --chip-off-bg: #272d29;
+    --cat-bg: #3a3320;
+    --cat-text: #d9bc66;
+    --promoted-bg: #2e2a1c;
+    --th-bg: #212823;
+    --danger: #ef7160;
+  }
+  .topbar { background: #1b5c40; }
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -91,9 +129,10 @@ button { font-family: inherit; }
 
 .match-card { display: flex; gap: 12px; padding: 12px; align-items: stretch; }
 .match-card .thumb {
-  width: 86px; min-height: 86px; border-radius: 8px; background: #e8ece9 center/cover no-repeat;
+  width: 86px; min-height: 86px; border-radius: 8px; background: var(--thumb-bg);
   flex-shrink: 0;
 }
+.match-card img.thumb { object-fit: cover; }
 .match-card .info { flex: 1; min-width: 0; }
 .match-card .name { font-weight: 700; font-size: 15px; margin: 2px 0 6px; color: var(--text); }
 .meta { color: var(--text-2); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
@@ -108,23 +147,31 @@ button { font-family: inherit; }
 .badge.finished { background: var(--gray); }
 
 .chip {
-  display: inline-block; background: #eaf3ee; color: var(--primary-dark);
+  display: inline-block; background: var(--chip-bg); color: var(--primary-dark);
   border-radius: 14px; padding: 3px 11px; font-size: 13px; margin: 2px 4px 2px 0;
 }
-a.chip:active { background: #d6e8de; }
-.chip.off { background: #f0f1f0; color: var(--text-2); }
+a.chip:active { background: var(--chip-bg-active); }
+.chip.off { background: var(--chip-off-bg); color: var(--text-2); }
 .chip.toggle { cursor: pointer; user-select: none; border: 1px solid transparent; }
 .chip.toggle.on { background: var(--primary); color: #fff; }
-.chip.cat { background: #fbf2d9; color: #8a6d12; font-weight: 600; }
+.chip.toggle.warn { border-color: var(--orange); }
+.chip.toggle.warn:not(.on) { color: var(--orange); background: transparent; }
+.chip.cat { background: var(--cat-bg); color: var(--cat-text); font-weight: 600; }
+
+.btn-mini {
+  display: inline-block; padding: 4px 12px; margin: 2px 6px 2px 0;
+  border: 1px solid var(--primary); border-radius: 14px; background: var(--primary);
+  color: #fff; font-size: 13px; font-weight: 700; cursor: pointer;
+}
 
 /* ---------- 排名賽:晉升甲組 ---------- */
 .promo-card { border-left: 4px solid var(--gold); }
-.promo-title { font-weight: 800; color: #8a6d12; margin-bottom: 4px; }
+.promo-title { font-weight: 800; color: var(--cat-text); margin-bottom: 4px; }
 .chip-promo {
   display: inline-block; background: var(--gold); color: #fff;
   border-radius: 9px; padding: 0 7px; font-size: 11px; font-weight: 700; vertical-align: 1px;
 }
-table.plain tr.promoted td { background: #fdf8e8; }
+table.plain tr.promoted td { background: var(--promoted-bg); }
 
 /* ---------- section title ---------- */
 h2.sec { font-size: 15px; margin: 18px 2px 8px; color: var(--primary-dark); }
@@ -133,7 +180,7 @@ h2.sec small { color: var(--text-2); font-weight: 400; }
 /* ---------- tables ---------- */
 table.plain { width: 100%; border-collapse: collapse; font-size: 14px; }
 table.plain th, table.plain td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; }
-table.plain th { color: var(--text-2); font-weight: 600; font-size: 13px; background: #fafbfa; }
+table.plain th { color: var(--text-2); font-weight: 600; font-size: 13px; background: var(--th-bg); }
 .rank-1 { color: var(--gold); font-weight: 800; }
 .rank-2 { color: #8a8f98; font-weight: 800; }
 .rank-3 { color: #b06b34; font-weight: 800; }
@@ -172,8 +219,21 @@ table.plain th { color: var(--text-2); font-weight: 600; font-size: 13px; backgr
 }
 .btn-link {
   display: inline-block; padding: 8px 14px; border-radius: 8px; font-size: 14px;
-  background: #eaf3ee; color: var(--primary-dark); margin: 4px 6px 4px 0;
+  background: var(--chip-bg); color: var(--primary-dark); margin: 4px 6px 4px 0;
 }
+
+/* 報名截止提醒 */
+.deadline-soon { color: var(--danger); font-weight: 700; }
+.deadline-over { color: var(--text-2); }
+
+/* 選手戰績摘要列 */
+.statbar { display: flex; text-align: center; padding: 10px 0; }
+.statbar .stat { flex: 1; }
+.statbar .stat b { display: block; font-size: 20px; line-height: 1.2; }
+.statbar .stat b.w { color: var(--win); }
+.statbar .stat b.l { color: var(--lose); }
+.statbar .stat b.g { color: var(--gold); }
+.statbar .stat span { font-size: 12px; color: var(--text-2); }
 
 /* tournament detail hero */
 .hero img { width: 100%; max-height: 300px; object-fit: cover; display: block; }

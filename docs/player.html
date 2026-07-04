@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>選手 - 羽球賽事資料庫</title>
 <meta name="theme-color" content="#1a7a4f">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1b5c40">
 <link rel="manifest" href="./manifest.json">
 <link rel="icon" href="./icons/icon-192.png">
 <link rel="apple-touch-icon" href="./icons/icon-192.png">
@@ -91,9 +92,9 @@ async function init() {
   renderNav("search");
   document.getElementById("title").textContent = `👤 ${name}`;
   document.title = `${name} - 羽球賽事資料庫`;
-  const [playersDB, _tmap] = await Promise.all([loadJSON("players.json"), tournMap()]);
+  const [shard, _tmap] = await Promise.all([loadPlayerShard(name), tournMap()]);
   tmap = _tmap;
-  const recs = playersDB.players[name];
+  const recs = shard.players[name];
   const out = document.getElementById("out");
   if (!recs) { out.innerHTML = `<div class="empty">查無選手「${esc(name)}」</div>`; return; }
 
@@ -106,7 +107,18 @@ async function init() {
     html += `<div class="note">所屬單位:${unitLink([...units][0])}</div>`;
   }
 
-  const ranks = playersDB.ranks[name] || [];
+  const ranks = shard.ranks[name] || [];
+
+  // 戰績摘要(勝負由逐場比分統計;團體賽以出賽的「點」計)
+  const totW = recs.reduce((s, r) => s + (r.w || 0), 0);
+  const totL = recs.reduce((s, r) => s + (r.l || 0), 0);
+  html += `<div class="card statbar">
+    <div class="stat"><b>${recs.length}</b><span>參加賽事</span></div>
+    <div class="stat"><b class="w">${totW}</b><span>勝</span></div>
+    <div class="stat"><b class="l">${totL}</b><span>負</span></div>
+    <div class="stat"><b class="g">${ranks.length}</b><span>獲獎</span></div>
+  </div>
+  ${totW + totL ? `<div class="note" style="margin-top:-6px">勝負由收錄的逐場比分統計(團體賽以出賽點計),未收錄比分的賽事不計入。</div>` : ""}`;
   if (ranks.length) {
     const sorted = [...ranks].sort((a, b) =>
       ((tmap[b.openid]?.dateStart) || "").localeCompare((tmap[a.openid]?.dateStart) || "") || a.rank - b.rank);

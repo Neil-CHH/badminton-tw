@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>單位 - 羽球賽事資料庫</title>
 <meta name="theme-color" content="#1a7a4f">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1b5c40">
 <link rel="manifest" href="./manifest.json">
 <link rel="icon" href="./icons/icon-192.png">
 <link rel="apple-touch-icon" href="./icons/icon-192.png">
@@ -22,32 +23,78 @@
 <script src="./js/common.js"></script>
 <script>
 const name = qs("name");
-let unitsDB, tmap, selected = new Set([name]);
+let unitIdx, tmap, selected = new Set([name]);
+const recCache = {};   // unit 名稱 → 完整紀錄(由分片取得)
 
 function variantsOf(n) {
-  // 名稱互為包含者視為可能同一單位(如「崑山國小」vs「南市崑山國小」)
-  return Object.keys(unitsDB).filter(u =>
-    u !== n && (u.includes(n) || (n.length >= 2 && n.includes(u))));
+  // 名稱互為包含者視為可能同一單位(如「崑山國小」vs「南市崑山國小」)。
+  // 被包含的一方至少 3 個字,避免「國小」「羽球」這類通用短名混入。
+  if (n.length < 2) return [];
+  return Object.keys(unitIdx)
+    .filter(u => u !== n && ((n.length >= 3 && u.includes(n)) || (u.length >= 3 && n.includes(u))))
+    .sort((a, b) => (unitIdx[b] ? unitIdx[b][0] : 0) - (unitIdx[a] ? unitIdx[a][0] : 0));
 }
 
+/* 基準縣市:目前單位名稱的縣市前綴;若沒有,取場次最多且帶縣市前綴的變體。
+   縣市前綴與基準不同者(如「臺中市四維國小」vs「高雄市四維國小」)很可能是同名不同校。 */
+function dominantCounty(vs) {
+  const mine = countyOf(name);
+  if (mine) return mine;
+  for (const v of vs) {           // vs 已按場次數排序
+    const c = countyOf(v);
+    if (c) return c;
+  }
+  return "";
+}
+function isConflict(v, dom) {
+  const c = countyOf(v);
+  return !!(dom && c && c !== dom);
+}
+
+const MAXVARIANTS = 40;
 function renderVariants() {
-  const vs = variantsOf(name);
+  const all = variantsOf(name);
+  const vs = all.slice(0, MAXVARIANTS);
   const el = document.getElementById("variants");
   if (!vs.length) { el.innerHTML = ""; return; }
-  el.innerHTML = `<div class="note">相近名稱(可能是同一單位的不同寫法,點選合併檢視):</div>` +
-    vs.map(v => `<span class="chip toggle ${selected.has(v) ? "on" : ""}" data-u="${esc(v)}">${esc(v)}</span>`).join("");
+  const dom = dominantCounty(vs);
+  const mergeable = vs.filter(v => !isConflict(v, dom));
+  el.innerHTML = `<div class="note">相近名稱(可能是同一單位的不同寫法,點選合併檢視;⚠️ 為縣市前綴不同,可能是同名不同校):</div>` +
+    (mergeable.length ? `<button class="btn-mini" id="merge-all">全部合併(${mergeable.length})</button>` : "") +
+    vs.map(v => {
+      const tc = unitIdx[v] ? unitIdx[v][0] : 0;
+      const warn = isConflict(v, dom);
+      return `<span class="chip toggle ${selected.has(v) ? "on" : ""} ${warn ? "warn" : ""}"
+        data-u="${esc(v)}">${warn ? "⚠️ " : ""}${esc(v)}・${tc}場</span>`;
+    }).join("") +
+    (all.length > MAXVARIANTS ? `<div class="note">相近名稱過多,僅顯示場次最多的前 ${MAXVARIANTS} 個</div>` : "");
   el.querySelectorAll(".chip.toggle").forEach(c => c.onclick = () => {
     const u = c.dataset.u;
     selected.has(u) ? selected.delete(u) : selected.add(u);
-    renderVariants(); renderBody();
+    renderVariants(); renderBody().catch(console.error);
   });
+  const ma = document.getElementById("merge-all");
+  if (ma) ma.onclick = () => {
+    mergeable.forEach(v => selected.add(v));
+    renderVariants(); renderBody().catch(console.error);
+  };
 }
 
-function renderBody() {
+async function loadRecs() {
+  const need = [...selected].filter(u => !(u in recCache) && unitIdx[u]);
+  await Promise.all(need.map(async u => {
+    const shard = await loadUnitShard(u);
+    recCache[u] = shard[u] || null;
+  }));
+}
+
+async function renderBody() {
   const out = document.getElementById("out");
+  out.innerHTML = `<div class="loading">載入中…</div>`;
+  await loadRecs();
   const ranks = [], byTourn = {};
   selected.forEach(u => {
-    const rec = unitsDB[u];
+    const rec = recCache[u];
     if (!rec) return;
     rec.ranks.forEach(r => ranks.push({ ...r, unit: u }));
     rec.t.forEach(e => {
@@ -58,6 +105,7 @@ function renderBody() {
   });
 
   let html = "";
+  html += `<div class="note">合併檢視 ${selected.size} 個名稱:參賽 ${Object.keys(byTourn).length} 場・得獎 ${ranks.length} 次${selected.size > 1 ? "。合併結果可能包含同名不同校,請自行判別。" : ""}</div>`;
   if (ranks.length) {
     ranks.sort((a, b) => ((tmap[b.openid]?.dateStart) || "").localeCompare((tmap[a.openid]?.dateStart) || "") || a.rank - b.rank);
     html += `<h2 class="sec">🏆 得獎紀錄 <small>(${ranks.length})</small></h2>
@@ -98,15 +146,16 @@ async function init() {
   renderNav("search");
   document.getElementById("title").textContent = `🏫 ${name}`;
   document.title = `${name} - 羽球賽事資料庫`;
-  [unitsDB, tmap] = await Promise.all([loadJSON("units.json"), tournMap()]);
-  if (!unitsDB[name]) {
+  const [si, _tmap] = await Promise.all([loadJSON("search-index.json"), tournMap()]);
+  unitIdx = si.units; tmap = _tmap;
+  if (!unitIdx[name]) {
     document.getElementById("out").innerHTML = `<div class="empty">查無單位「${esc(name)}」</div>`;
     const vs = variantsOf(name);
     if (vs.length) { renderVariants(); }
     return;
   }
   renderVariants();
-  renderBody();
+  await renderBody();
 }
 init().catch(e => document.getElementById("out").innerHTML =
   `<div class="empty">資料載入失敗:${esc(e.message)}</div>`);
