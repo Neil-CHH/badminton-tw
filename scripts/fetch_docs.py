@@ -7,6 +7,8 @@
 用法:
     python scripts/fetch_docs.py            # 增量:已結束且已有成績連結的賽事跳過
     python scripts/fetch_docs.py --force    # 重新檢查所有賽事
+    python scripts/fetch_docs.py --relink   # 不打 API,只由既有 documents 重新同步
+                                            # regulation.pdf / resultPdf 指向最新一份
 """
 import json
 import re
@@ -71,6 +73,36 @@ def classify(title, link):
     return "其他"
 
 
+def sync_links(t):
+    """由 documents 同步 regulation.pdf 與 resultPdf,回傳是否有變動。
+
+    documents 由 API 依日期新→舊排序,故各類型取第一份即最新。既有值若仍在 documents
+    中就保留(同賽事可能有多份規程,如學生組/成人組,人工挑過的不要蓋掉);官方換新版
+    導致舊 URL 消失時才改指最新一份。
+    """
+    docs = t.get("documents") or []
+    cur_urls = {d["url"] for d in docs}
+    changed = False
+
+    reg_urls = [d["url"] for d in docs if d["type"] == "規程"]
+    if reg_urls:
+        if not t.get("regulation"):
+            t["regulation"] = {"organizer": None, "ball": None, "fee": None,
+                               "souvenir": None, "awards": None, "notes": None,
+                               "pdf": reg_urls[0]}
+            changed = True
+        elif t["regulation"].get("pdf") not in cur_urls:
+            t["regulation"]["pdf"] = reg_urls[0]
+            changed = True
+
+    res_urls = [d["url"] for d in docs if d["type"] == "成績"]
+    if res_urls and t.get("resultPdf") not in cur_urls:
+        t["resultPdf"] = res_urls[0]
+        changed = True
+
+    return changed
+
+
 def process(t):
     openid = t["openid"]
     items = news(openid)
@@ -85,27 +117,30 @@ def process(t):
 
     changed = docs != t.get("documents")
     t["documents"] = docs
-
-    # 規程/成績連結:填進 regulation.pdf 與 resultPdf(取最新一份;不覆蓋既有值)
-    reg_urls = [d["url"] for d in docs if d["type"] == "規程"]
-    if reg_urls:
-        if not t.get("regulation"):
-            t["regulation"] = {"organizer": None, "ball": None, "fee": None,
-                               "souvenir": None, "awards": None, "notes": None,
-                               "pdf": reg_urls[0]}
-            changed = True
-        elif not t["regulation"].get("pdf"):
-            t["regulation"]["pdf"] = reg_urls[0]
-            changed = True
-    res_urls = [d["url"] for d in docs if d["type"] == "成績"]
-    if res_urls and not t.get("resultPdf"):
-        t["resultPdf"] = res_urls[0]
-        changed = True
+    changed = sync_links(t) or changed
 
     return changed, len(docs)
 
 
+def relink():
+    """只重跑連結同步(不打 API),用於修正指向舊版 PDF 的 regulation.pdf / resultPdf。"""
+    n = 0
+    for p in sorted(TOURN_DIR.glob("*.json")):
+        t = json.loads(p.read_text(encoding="utf-8"))
+        if t["openid"].startswith("manual-"):
+            continue
+        if sync_links(t):
+            n += 1
+            p.write_text(json.dumps(t, ensure_ascii=False, separators=(",", ":")),
+                         encoding="utf-8")
+            print(f"[同步] {t['openid']} {t['name'][:25]}")
+    print(f"\n完成:同步 {n} 場")
+
+
 def main():
+    if "--relink" in sys.argv:
+        relink()
+        return
     force = "--force" in sys.argv
     total_docs = total_changed = 0
     files = sorted(TOURN_DIR.glob("*.json"))
