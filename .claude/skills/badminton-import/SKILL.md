@@ -31,9 +31,10 @@ description: 匯入競賽規程或總成績紀錄 PDF 到羽球賽事資料庫 �
    ```json
    {"organizer": "主辦單位", "ball": "比賽用球(無則 null)", "fee": "報名費",
     "souvenir": "紀念品", "awards": "獎勵辦法(含取名次規則)", "notes": "賽制等重點",
-    "pdf": "archive/規程/{year}/{openid}_競賽規程.pdf"}
+    "pdf": "https://go.mylivescore.link/uploads/…/競賽規程.pdf"}
    ```
-   只填 PDF 明確寫的內容,不要腦補。
+   只填 PDF 明確寫的內容,不要腦補。`pdf` 一律填 documents 中的官方 URL(見第 5 點),
+   不是本機路徑;該賽事 documents 沒有規程連結時填 null。
 
 4. **成績 PDF → `standings`**:以最後的「成績總表」為準(各組依報名組數取 N 名,
    決賽敗者不一定有名次)。每筆 `{"group","rank","unit","members":[…],"source":"pdf"}`。
