@@ -15,6 +15,7 @@
   - 官方 PDF **不留底**(使用者決定):documents/regulation.pdf/resultPdf 都是外部 URL
 - `scripts/scrape.py` — API 抓取+組別標籤+名次推導(`--full` 全量)。結尾自動跑 rebuild_index
 - `scripts/rebuild_index.py` — 由 tournaments/*.json 重建索引與分片(匯入後必跑)
+- `scripts/verify_data.py` — 資料健檢(連結一致性/索引新鮮度/分片落點/亂碼/缺口),只讀不寫
 - `inbox/` — 待匯入 PDF 暫放
 
 ## mylivescore.tw API(2026-06 偵察,細節勿憑記憶,以 scrape.py 為準)
@@ -52,7 +53,9 @@
 python scripts/scrape.py          # 每月增量更新
 python scripts/scrape.py --full   # 全量重抓
 python scripts/fetch_docs.py      # 更新官方文件連結(增量,不下載)
+python scripts/fetch_docs.py --relink   # 不打 API,只重新同步 regulation.pdf/resultPdf
 python scripts/rebuild_index.py   # 重建索引(匯入後)
+python scripts/verify_data.py --summary  # 健檢+新增賽事摘要(部署前跑,exit 1 表示要修)
 python -m http.server 8765 -d docs   # 本地預覽
 ```
 
@@ -66,3 +69,7 @@ python -m http.server 8765 -d docs   # 本地預覽
 - sw.js shell 快取為 stale-while-revalidate,改前端後不需手動升 VERSION;data 為
   network-first + 3.5s timeout 退回快取。
 - 名次與比分為自動推導/抓取,about 頁已標注「以官方公告為準」。
+- 增量規則(2026-08 調整):scrape 抓回的內容若與現有檔案相同(除 lastUpdated)就不寫檔,
+  故「更新 N」是真實變動數;「已結束但無比分」的賽事每月重試,但**名次已由 PDF 補齊者
+  不再重試**,需要時用 `--full`。fetch_docs 對結束 60 天內的賽事仍重查,以追上官方換版的
+  總成績紀錄;`regulation.pdf`/`resultPdf` 由 `sync_links()` 保持指向 documents 中的最新一份。

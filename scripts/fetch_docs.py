@@ -5,7 +5,7 @@
 資料來源:go.mylivescore.link 的 news API(每場賽事的「最新消息/賽事文件」)。
 
 用法:
-    python scripts/fetch_docs.py            # 增量:已結束且已有成績連結的賽事跳過
+    python scripts/fetch_docs.py            # 增量:已結束逾 60 天且已有成績連結的賽事跳過
     python scripts/fetch_docs.py --force    # 重新檢查所有賽事
     python scripts/fetch_docs.py --relink   # 不打 API,只由既有 documents 重新同步
                                             # regulation.pdf / resultPdf 指向最新一份
@@ -15,6 +15,7 @@ import re
 import sys
 import time
 import urllib.request
+from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -23,6 +24,10 @@ TOURN_DIR = DATA_DIR / "tournaments"
 
 LINK_API = "https://go.mylivescore.link/links.php"
 LINK_ORIGIN = "https://go.mylivescore.link"
+
+# 官方常在賽後數週把總成績紀錄換成新版(新檔名=新 URL),這段期間即使已有成績連結仍重查,
+# 否則舊連結會永遠停在失效的版本。
+RECHECK_DAYS = 60
 
 _token = ""
 
@@ -142,14 +147,16 @@ def main():
         relink()
         return
     force = "--force" in sys.argv
+    recheck_since = (date.today() - timedelta(days=RECHECK_DAYS)).isoformat()
     total_docs = total_changed = 0
     files = sorted(TOURN_DIR.glob("*.json"))
     for i, p in enumerate(files, 1):
         t = json.loads(p.read_text(encoding="utf-8"))
         if t["openid"].startswith("manual-"):
             continue
-        # 增量:已結束且已有成績連結的就不重查
-        if not force and t.get("status") == "finished" and t.get("documents") \
+        # 增量:已結束且已有成績連結的就不重查,但賽後 RECHECK_DAYS 天內仍追蹤改版
+        if not force and (t.get("dateEnd") or "") < recheck_since \
+                and t.get("status") == "finished" and t.get("documents") \
                 and any(d["type"] == "成績" for d in t["documents"]):
             continue
         try:

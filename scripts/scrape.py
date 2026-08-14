@@ -6,6 +6,8 @@
     python scripts/scrape.py --full   # 全量:所有賽事重抓(含逐場比分)
 
 資料寫入 docs/data/tournaments/{openid}.json,結尾自動呼叫 rebuild_index.py。
+抓回來的內容與現有檔案相同(除 lastUpdated)時不寫檔,故「更新 N」代表真的有變動。
+已結束但 API 無比分的賽事會每月重試,但名次已由 PDF 補齊者除外(見 main 的 need 條件)。
 API 細節見 CLAUDE.md。
 """
 import json
@@ -253,6 +255,14 @@ def load_existing(openid):
     return None
 
 
+def same_content(a, b):
+    """除 lastUpdated 外完全相同。用來避免每月把沒變的賽事整份重寫(製造 git 噪音)。"""
+    if not a or not b:
+        return False
+    return ({k: v for k, v in a.items() if k != "lastUpdated"}
+            == {k: v for k, v in b.items() if k != "lastUpdated"})
+
+
 def scrape_tournament(api, info, status_key, existing):
     openid = info["OpenID"]
     record = {
@@ -335,7 +345,7 @@ def main():
     api = Api()
     print(f"liveresult host: {api.live_base}")
 
-    new_count = updated = skipped = 0
+    new_count = updated = unchanged = skipped = 0
     seen_ids = set()
     for status_key in ("1", "2", "3"):
         infos = api.mlist(status_key)
@@ -355,7 +365,10 @@ def main():
                 or existing is None
                 or existing.get("status") != STATUS_NAME[status_key]
                 or status_key == "2"  # 進行中的每次都更新比分
-                or (status_key == "3" and not existing.get("matches"))  # 已結束但尚無比分 → 重試抓
+                # 已結束但尚無比分 → 重試抓;但名次已由 PDF 補齊者不再重試(API 不會再有
+                # 資料,這類賽事佔了每月無效重試的大宗)。需要時用 --full 強制全量重抓。
+                or (status_key == "3" and not existing.get("matches")
+                    and not existing.get("standings"))
             )
             if not need:
                 skipped += 1
@@ -364,6 +377,9 @@ def main():
                 record = scrape_tournament(api, info, status_key, existing)
             except Exception as e:  # noqa: BLE001
                 print(f"  [錯誤] {openid} {info['MName']}: {e}")
+                continue
+            if same_content(record, existing):
+                unchanged += 1
                 continue
             out = TOURN_DIR / f"{openid}.json"
             out.write_text(json.dumps(record, ensure_ascii=False, separators=(",", ":")),
@@ -375,7 +391,7 @@ def main():
                 updated += 1
                 print(f"  [更新] {openid} {record['name']} ({len(record['matches'])} 場比賽)")
 
-    print(f"\n完成:新增 {new_count}、更新 {updated}、略過 {skipped}")
+    print(f"\n完成:新增 {new_count}、更新 {updated}、無變化 {unchanged}、略過 {skipped}")
     print("重建索引…")
     import rebuild_index  # noqa: PLC0415
     rebuild_index.main()
