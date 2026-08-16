@@ -118,7 +118,13 @@ async function init() {
     <div class="stat"><b class="l">${totL}</b><span>負</span></div>
     <div class="stat"><b class="g">${ranks.length}</b><span>獲獎</span></div>
   </div>
-  ${totW + totL ? `<div class="note" style="margin-top:-6px">勝負由收錄的逐場比分統計(團體賽以出賽點計),未收錄比分的賽事不計入。</div>` : ""}`;
+  ${(() => {
+    const onlyN = recs.filter(r => r.e).length;
+    const parts = [];
+    if (totW + totL) parts.push("勝負由收錄的逐場比分統計(團體賽以出賽點計),未收錄比分的賽事不計入。");
+    if (onlyN) parts.push(`其中 ${onlyN} 場僅有參賽名單(該賽事未公布逐場比分),標示為「僅參賽」。`);
+    return parts.length ? `<div class="note" style="margin-top:-6px">${parts.join("")}</div>` : "";
+  })()}`;
   if (ranks.length) {
     const sorted = [...ranks].sort((a, b) =>
       ((tmap[b.openid]?.dateStart) || "").localeCompare((tmap[a.openid]?.dateStart) || "") || a.rank - b.rank);
@@ -141,9 +147,9 @@ async function init() {
     const t = tmap[r.openid];
     html += `<details class="card hist" data-oid="${esc(r.openid)}">
       <summary>
-        <span>${esc(t ? t.name : r.openid)}
+        <span>${esc(t ? t.name : r.openid)}${r.e ? ` <span class="chip src">僅參賽</span>` : ""}
           <div style="font-weight:400;font-size:12.5px;color:var(--text-2)">
-            ${esc(r.groups.join("、"))}${r.units.length ? "・" + esc(r.units.join("、")) : ""}</div>
+            ${[r.groups.join("、"), r.units.join("、")].filter(Boolean).map(esc).join("・")}</div>
         </span>
         <span class="when">${t ? fmtDate(t.dateStart) : ""}</span>
       </summary>

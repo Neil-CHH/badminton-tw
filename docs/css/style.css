@@ -256,3 +256,10 @@ table.plain th { color: var(--text-2); font-weight: 600; font-size: 13px; backgr
   body { font-size: 15.5px; }
   .match-card .thumb { width: 120px; }
 }
+
+/* 參賽名單:組別可收合,人多時不會塞爆頁面 */
+details.entry-grp > summary {
+  cursor: pointer; padding: 6px 2px; font-weight: 600;
+  border-bottom: 1px solid var(--line);
+}
+details.entry-grp > summary small { font-weight: 400; color: var(--text-2); }

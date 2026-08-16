@@ -75,8 +75,12 @@ def main():
             "category": t.get("category"),
             "hasMatches": bool(t.get("matches")),
             "hasRegulation": bool(t.get("regulation")),
+            "hasEntries": bool(t.get("entries")),
             "groupCount": len(t.get("groups", [])),
         })
+
+        # (姓名) 有比分或名次者。參賽名單登錄時據此判斷是不是「僅參賽」。
+        scored = set()
 
         def add_player(name, unit, group, openid=oid):
             rec = players.setdefault(name, {})
@@ -111,6 +115,7 @@ def main():
                     for nm in split_members(si.get("member" + side)):
                         ent = add_player(nm, unit, g)
                         add_unit(unit, nm)
+                        scored.add(nm)
                         side_players[side].add(nm)
                         if is_team and rubber_win:
                             ent["w" if rubber_win == side else "l"] += 1
@@ -134,6 +139,7 @@ def main():
                     all_members.append(nm2)
                     add_player(nm2, unit_i, s.get("group", ""))
                     add_unit(unit_i, nm2)
+                    scored.add(nm2)
                     ranks.setdefault(nm2, []).append({
                         "openid": oid, "group": s.get("group", ""),
                         "rank": s.get("rank"), "unit": unit_i,
@@ -150,6 +156,19 @@ def main():
                     "rank": s.get("rank"), "members": all_members,
                 })
 
+        # 參賽名單:讓「有參加但沒得名」的選手也查得到。
+        # 只登錄出賽事實,不動勝負;沒有比分也沒有名次者標記 entry_only,
+        # 前端據此顯示「僅參賽」,避免與有成績資料的紀錄混淆。
+        for e in t.get("entries", []):
+            unit = e.get("unit", "") or ""
+            group = e.get("group", "") or ""
+            for nm in e.get("members", []):
+                for nm2 in split_members(nm):
+                    ent = add_player(nm2, unit, group)
+                    add_unit(unit, nm2)
+                    if nm2 not in scored:
+                        ent["entry_only"] = True
+
     # ---------- 序列化 ----------
     index.sort(key=lambda x: x.get("dateStart", ""), reverse=True)
 
@@ -162,6 +181,8 @@ def main():
                 rec["w"] = e["w"]
             if e["l"]:
                 rec["l"] = e["l"]
+            if e.get("entry_only"):
+                rec["e"] = 1   # 僅有報名/籤表紀錄,沒有比分也沒有名次
             out.append(rec)
         players_out[name] = out
 

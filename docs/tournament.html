@@ -167,6 +167,31 @@ function render() {
       })()}${anyPromo ? "標「晉甲」者為晉升中華民國羽球協會甲組之選手。" : ""}</div>`;
   }
 
+  const entries = T.entries || [];
+  if (entries.length) {
+    const byGroup = new Map();
+    entries.forEach(e => {
+      const g = e.group || "其他";
+      if (!byGroup.has(g)) byGroup.set(g, []);
+      (e.members || []).flatMap(splitMembers).forEach(nm => byGroup.get(g).push([nm, e.unit || ""]));
+    });
+    const gs = [...byGroup.keys()].sort((a, b) => a.localeCompare(b, "zh-Hant"));
+    const cov = T.entriesCoverage;
+    html += `<h2 class="sec">👥 參賽名單 <small>(${gs.length} 組・${entries.length} 人次)</small></h2>
+      <div class="card"><div class="pad">` +
+      gs.map(g => {
+        const people = byGroup.get(g);
+        return `<details class="entry-grp"><summary>${esc(g)} <small>(${people.length})</small></summary>
+          <div style="margin:6px 0 10px">` +
+          people.map(([nm, u]) => `<a class="chip" href="./player.html?name=${encodeURIComponent(nm)}"
+            title="${esc(u)}">${esc(nm)}</a>`).join("") + `</div></details>`;
+      }).join("") +
+      `<div class="note" style="margin-bottom:0">名單取自官方賽程表(籤表),用於讓未得名的選手也查得到。
+        籤表為賽前版本,可能不含補報名、且含後來棄權者${
+          cov != null && cov < 0.98 ? `;本賽事約收錄官方公告人數的 ${Math.round(cov * 100)}%` : ""
+        }。</div></div></div>`;
+  }
+
   const groups = T.groups || [];
   if (groups.length) {
     html += `<h2 class="sec">🎯 競賽組別 <small>(${groups.length})</small></h2>

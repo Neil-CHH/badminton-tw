@@ -76,12 +76,13 @@ def load_roster(openid):
     raw = json.loads(p.read_text(encoding="utf-8"))
     out = {}
     for g, v in raw.items():
-        pool = []
+        # 多個原始組別名可能正規化成同一個鍵(籤表把同一組拆成多個區塊),
+        # 必須合併而不是覆蓋,否則池子會只剩最後一塊(實測 U9男單 105 筆被蓋成 11 筆)。
+        pool = out.setdefault(norm_group(g), [])
         for unit, name in v:
             nm = _PAREN.sub("", clean_name(name)).strip()
-            if nm and (unit, nm) not in pool:
+            if nm and (str(unit).strip(), nm) not in pool:
                 pool.append((str(unit).strip(), nm))
-        out[norm_group(g)] = pool
     return out
 
 

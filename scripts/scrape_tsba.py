@@ -207,6 +207,12 @@ def build_record(openid, info, existing):
         "groups": old.get("groups", []),
         "matches": old.get("matches", []),
         "standings": old.get("standings", []),
+        # 參賽名單:讓沒得名的選手也查得到(來源是賽前籤表,見 build_entries)
+        "entries": info.get("entries") if info.get("entries") is not None
+                   else old.get("entries", []),
+        "entriesCoverage": (info.get("entriesCoverage")
+                            if "entriesCoverage" in info
+                            else old.get("entriesCoverage")),
         "resultPdf": old.get("resultPdf"),
         "documents": docs,
         "lastUpdated": date.today().isoformat(),
@@ -262,6 +268,38 @@ def enrich(http, entries, use_detail=True):
     return cache
 
 
+def get_schedule_xlsx(http, openid, info, cache):
+    """下載該屆的賽程表/秩序冊 xlsx 並存到 inbox/tsba/{openid}/roster.xlsx。
+
+    賽期與參賽名冊都只能從這份檔案取得,所以抓一次存起來共用。
+    只收 .xlsx;早年的 .xls 是舊二進位格式,openpyxl 讀不了。
+    """
+    dest = INBOX / openid / "roster.xlsx"
+    if dest.exists():
+        return dest
+    for d in sorted(info["docs"], key=lambda x: x.get("date") or "", reverse=True):
+        if not _SCHEDULE_DOC.search(d["title"]):
+            continue
+        det = cache.get(d["id"])
+        if det is None:
+            try:
+                det = cache[d["id"]] = fetch_detail(http, d["id"])
+            except Exception:  # noqa: BLE001
+                continue
+        xlsx = [u for u in det["attachments"] if u.lower().endswith(".xlsx")]
+        if not xlsx:
+            continue
+        try:
+            raw = http.get(xlsx[0], referer=f"{BASE}/{d['id']}.html")
+        except Exception as e:  # noqa: BLE001
+            print(f"  [警告] {openid} 下載賽程 xlsx 失敗: {e}")
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(raw)
+        return dest
+    return None
+
+
 def fill_dates_from_schedule(http, openid, info, cache, existing):
     """賽事日期只有賽程表 xlsx 裡才有(列表頁的日期是公告有效期,不是賽期)。
 
@@ -270,33 +308,52 @@ def fill_dates_from_schedule(http, openid, info, cache, existing):
     if (existing or {}).get("dateStart"):
         return
     from tsba_xlsx import extract_dates  # noqa: PLC0415
-    for d in sorted(info["docs"], key=lambda x: x.get("date") or "", reverse=True):
-        if not _SCHEDULE_DOC.search(d["title"]):
+    path = get_schedule_xlsx(http, openid, info, cache)
+    if not path:
+        return
+    try:
+        start, end = extract_dates(path, info["year"])
+    except Exception as e:  # noqa: BLE001
+        print(f"  [警告] {openid} 讀取賽程 xlsx 失敗: {e}")
+        return
+    if start:
+        info["dateStart"], info["dateEnd"] = start, end
+        print(f"  [日期] {openid} {start} ~ {end}(取自賽程表)")
+
+
+# 抽取數低於宣告數的這個比例,視為解析失敗(排版不對),整組不收錄。
+# 門檻不設高:低於宣告數但內容正確的組別仍然有價值——名單的用途是
+# 「讓沒得名的選手查得到」,整組丟掉只會製造更多查不到的人。
+ENTRY_MIN_RATIO = 0.5
+
+
+def build_entries(path, warn=None):
+    """由賽程表 xlsx 產生 entries[],並回傳 (entries, 覆蓋率, 被淘汰的組別)。"""
+    from tsba_xlsx import declared_counts, extract_roster  # noqa: PLC0415
+    roster = extract_roster(path)
+    declared = declared_counts(path)
+
+    entries, dropped = [], []
+    exp_total = got_total = 0
+    for group, rows in sorted(roster.items()):
+        dec = declared.get(group)
+        expected = 0
+        if dec:
+            expected = dec[0] * 2 if dec[1] in ("組", "隊") else dec[0]
+        if not rows or (expected and len(rows) < expected * ENTRY_MIN_RATIO):
+            dropped.append((group, len(rows), expected))
             continue
-        det = cache.get(d["id"])
-        if det is None:
-            try:
-                det = fetch_detail(http, d["id"])
-            except Exception:  # noqa: BLE001
-                continue
-        # 只收 .xlsx;早年的 .xls 是舊二進位格式,openpyxl 讀不了
-        xlsx = [u for u in det["attachments"] if u.lower().endswith(".xlsx")]
-        if not xlsx:
-            continue
-        try:
-            raw = http.get(xlsx[0], referer=f"{BASE}/{d['id']}.html")
-            tmp = INBOX / "_tmp" / f"{openid}.xlsx"
-            tmp.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_bytes(raw)
-            start, end = extract_dates(tmp, info["year"])
-            tmp.unlink(missing_ok=True)
-        except Exception as e:  # noqa: BLE001
-            print(f"  [警告] {openid} 讀取賽程 xlsx 失敗: {e}")
-            continue
-        if start:
-            info["dateStart"], info["dateEnd"] = start, end
-            print(f"  [日期] {openid} {start} ~ {end}(取自賽程表)")
-            return
+        if expected:
+            exp_total += expected
+            got_total += min(len(rows), expected)
+        for unit, name in rows:
+            entries.append({"group": group, "unit": unit,
+                            "members": [name], "source": "draw"})
+    # 宣告數為 0 的組別無從驗證,覆蓋率只反映有宣告數的部分
+    coverage = round(got_total / exp_total, 3) if exp_total else None
+    if dropped and warn is not None:
+        warn.extend(dropped)
+    return entries, coverage, dropped
 
 
 def stage_results(http, tours, cache, only=None):
@@ -389,12 +446,31 @@ def main():
         stage_results(http, tours, cache, only)
         return
 
+    want_entries = "--build-entries" in argv
     new_count = updated = unchanged = 0
     for openid in sorted(tours):
         existing = load_existing(openid)
+        info = tours[openid]
         if "--no-detail" not in argv:
-            fill_dates_from_schedule(http, openid, tours[openid], cache, existing)
-        record = build_record(openid, tours[openid], existing)
+            fill_dates_from_schedule(http, openid, info, cache, existing)
+        # 參賽名單:只在還沒有時抓一次(比照 dateStart 的作法)
+        if want_entries and not (existing or {}).get("entries"):
+            path = get_schedule_xlsx(http, openid, info, cache)
+            if path:
+                try:
+                    ents, cov, dropped = build_entries(path)
+                except Exception as e:  # noqa: BLE001
+                    print(f"  [警告] {openid} 名單抽取失敗: {e}")
+                else:
+                    info["entries"], info["entriesCoverage"] = ents, cov
+                    covtxt = f"{cov:.0%}" if cov is not None else "無宣告數可驗證"
+                    print(f"  [名單] {openid} {len(ents)} 筆 / 覆蓋 {covtxt}"
+                          f"{f',淘汰 {len(dropped)} 組' if dropped else ''}")
+                    for g, got, exp in dropped[:5]:
+                        print(f"      [淘汰] {g}:抽到 {got} 筆,宣告 {exp}")
+            elif not (existing or {}).get("entries"):
+                print(f"  [提醒] {openid} 沒有可用的 .xlsx 賽程表,無法建立參賽名單")
+        record = build_record(openid, info, existing)
         label = "新增" if existing is None else "更新"
         detail = f"{len(record['documents'])} 份文件"
         if dry:

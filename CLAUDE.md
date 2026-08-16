@@ -19,6 +19,17 @@
 **名次優先序**(`sources_common.merge_standings`,以「組別」為單位取最高者,同組不混用):
 `pdf` ≧ `official` > `ocr` > `derived`。
 
+**參賽名單 `entries[]`**:沒有逐場比分的賽事只有得名者查得到(tsba 實測 2,213 人參賽只有
+221 人入庫)。`entries[]` 登錄「有出賽」這件事,讓沒得名的選手也搜尋得到:
+
+```json
+"entries": [{"group":"U11男單","unit":"北市民權","members":["王綨褘"],"source":"draw"}]
+```
+
+`source`:`draw`(賽程表籤表)。另有 `entriesCoverage`(對照籤表標題宣告人數的覆蓋率)。
+`rebuild_index` 只登錄出賽事實、不動勝負;該選手在該賽事既無比分也無名次時,
+分片紀錄加 `"e": 1`,前端顯示「僅參賽」。目前只有 tsba 有資料,欄位本身是通用的。
+
 **正規化契約(最重要)**:`rebuild_index.py` 與 `docs/tournament.html` 都直接讀 mylivescore
 原始 match 形狀。新來源必須輸出同樣 14 個 key(全為字串):`groupName / match / date /
 time / teamA / teamB / matchtype / stadium / winner / Asidescore / Bsidescore / abstain /
@@ -98,8 +109,18 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
 - **`/upload_attach/{epoch}.{xlsx|pdf}` 的檔名是 unix epoch**,用來當文件日期,
   也用來替標題沒寫年份的文件推年份。
 - **成績只有 JPG 圖片**(`/editor_images/`);賽程 xlsx 是空間排版的籤表樹,無法轉逐場比分。
-  但籤表裡「單位｜姓名」是真文字,`tsba_xlsx.extract_roster` 抽成名冊當校對字典。
-  **雙打一組佔兩列,第一位搭檔那列沒有籤位序號**,抽取時不能要求有序號。
+  但籤表裡「單位｜姓名」是真文字,`tsba_xlsx.extract_roster` 抽成名冊,一份資料兩個用途:
+  OCR 校對字典 + 賽事的 `entries[]` 參賽名單。
+- **籤表有四種排版都要處理**(`extract_roster` 的 A/B/C/D):
+  A `序號｜單位｜姓名`(2023 雙打是同列並排、2024 是搭檔在上一列且該列沒有序號)、
+  B `序號｜(空)｜姓名`(沒填單位的個人參賽者)、
+  C `隊名：｜X隊` + `隊員：｜甲｜乙…`(團體隊伍名單)、
+  D **直式**:單位／姓名1／姓名2 疊在同一欄的連續列(2022 的雙打分頁)。
+  單位詞彙要**整本活頁簿一起建**,因為直式分頁自己建不出來。
+- 組別標題兩種寫法都要認:會長盃短寫法「U9男單」、清晨盃長寫法「30歲男子甲組單打」;
+  說明常和標題擠在同一格(「…男單 ：108 人,107 場」),長度門檻要在剝掉說明之後才判斷。
+- 宣告人數(`declared_counts`)用來驗證抽取完整度,但**統計表分頁要跳過** ——
+  同名標題旁邊的數字是場數之類的別的東西,會蓋掉籤表標題裡的正確答案。
 - 賽事日期只有賽程表 xlsx 的日賽程分頁才有(列表頁的日期是公告有效期,不是賽期)。
 - 早年附件是 `.xls` 舊二進位格式,openpyxl 讀不了,只收 `.xlsx`。
 
@@ -122,6 +143,7 @@ python scripts/update_all.py --only lapgo        # 只跑單一來源
 python scripts/scrape.py          # 只跑 mylivescore(--full / --no-index)
 python scripts/scrape_lapgo.py    # 只跑 lapgo(--full / --only {cid} / --dry-run)
 python scripts/scrape_tsba.py     # 只跑 tsba(--dry-run / --no-detail)
+python scripts/scrape_tsba.py --build-entries   # 由賽程表 xlsx 建參賽名單(缺才抓)
 python scripts/scrape_tsba.py --stage-results    # 備妥 tsba 成績圖與名冊供視覺解析
 python scripts/tsba_reconcile.py --openid X --input raw.json [--apply]  # 名冊校對
 python scripts/fetch_docs.py      # 更新官方文件連結(增量,不下載;只對 mylivescore)

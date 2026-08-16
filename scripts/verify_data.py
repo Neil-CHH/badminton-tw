@@ -188,6 +188,20 @@ def check_standings(tours):
         print(f"[提醒] 其中 {ocr_bad} 個組別來自圖片解析(ocr),建議對照原圖抽查")
 
 
+def report_entries(tours):
+    """參賽名單的收錄狀況。名單讓沒得名的選手也查得到,覆蓋率偏低要留意。"""
+    rows = [(oid, t) for oid, t in sorted(tours.items()) if t.get("entries")]
+    if not rows:
+        return
+    total = sum(len(t["entries"]) for _, t in rows)
+    print(f"\n== 參賽名單({len(rows)} 場、{total} 筆)==")
+    for oid, t in rows:
+        cov = t.get("entriesCoverage")
+        covtxt = f"{cov:.0%}" if cov is not None else "無宣告數可驗證"
+        flag = "  ← 覆蓋偏低,可查籤表排版" if cov is not None and cov < 0.8 else ""
+        print(f"  {oid}  {len(t['entries']):5d} 筆  覆蓋 {covtxt}{flag}")
+
+
 def report_ocr(tours):
     """圖片解析的名次中,名冊查無而未能校對的筆數(補報名/換人居多,建議抽查)。"""
     rows = [(oid, s) for oid, t in tours.items()
@@ -268,6 +282,7 @@ def main():
         for m in warns:
             print(f"  [提醒] {m}")
 
+    report_entries(tours)
     report_ocr(tours)
     report_gaps(tours)
 
