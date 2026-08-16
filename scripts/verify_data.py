@@ -188,6 +188,20 @@ def check_standings(tours):
         print(f"[提醒] 其中 {ocr_bad} 個組別來自圖片解析(ocr),建議對照原圖抽查")
 
 
+def report_ocr(tours):
+    """圖片解析的名次中,名冊查無而未能校對的筆數(補報名/換人居多,建議抽查)。"""
+    rows = [(oid, s) for oid, t in tours.items()
+            for s in t.get("standings", []) if s.get("ocrUnverified")]
+    if not rows:
+        return
+    by_t = {}
+    for oid, _ in rows:
+        by_t[oid] = by_t.get(oid, 0) + 1
+    print(f"\n== 圖片解析待確認({len(rows)} 筆,名冊查無,已收錄但標記 ocrUnverified)==")
+    for oid, n in sorted(by_t.items()):
+        print(f"  {oid}  {n} 筆")
+
+
 def report_gaps(tours):
     """已結束、API 無比分、也還沒用 PDF 補名次 → 真正的資料缺口。"""
     gaps = [(t.get("dateEnd") or "", oid, t["name"])
@@ -254,6 +268,7 @@ def main():
         for m in warns:
             print(f"  [提醒] {m}")
 
+    report_ocr(tours)
     report_gaps(tours)
 
     if want_summary:

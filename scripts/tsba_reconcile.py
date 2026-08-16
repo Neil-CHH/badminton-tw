@@ -178,11 +178,14 @@ def reconcile(rows, roster):
         unit2, members2, status, notes = reconcile_entry(unit, members, pool)
         entry = {"group": group, "rank": int(rank), "unit": unit2,
                  "members": members2, "source": "ocr"}
-        if status in ("corrected", "unverified"):
+        if status != "verified":
             entry["ocrRaw"] = {"unit": unit, "members": members}
-        if status == "unmatched":
-            review.append({**entry, "_why": "、".join(notes), "_pool": key})
-            continue
+        if status in ("unmatched", "unverified"):
+            # 名冊查無此人多半是補報名/換人(籤表是賽前版本),不是辨識錯誤。
+            # 直接丟掉會漏掉真實的獎牌紀錄,所以保留但標記,讓之後可以篩出來抽查。
+            entry["ocrUnverified"] = True
+            review.append({**entry, "_why": "、".join(notes) or "名冊無此組別",
+                           "_pool": key})
         entry["_status"] = status
         entry["_notes"] = notes
         kept.append(entry)
@@ -207,8 +210,8 @@ def main():
     stat = Counter(e["_status"] for e in kept)
     print(f"解析 {len(rows)} 筆 → 自動命中 {stat.get('verified', 0)}"
           f"、自動更正 {stat.get('corrected', 0)}"
-          f"、無名冊 {stat.get('unverified', 0)}"
-          f"、需人工確認 {len(review)}")
+          f"、名冊查無(仍收錄並標記 ocrUnverified) "
+          f"{stat.get('unmatched', 0) + stat.get('unverified', 0)}")
     for e in kept:
         if e["_notes"] and e["_status"] == "corrected":
             print(f"  [更正] {e['group']} 第{e['rank']}名: {'、'.join(e['_notes'])}")

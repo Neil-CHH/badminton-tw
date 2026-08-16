@@ -61,27 +61,39 @@ def extract_roster(path, sheets=None):
     for sname in (sheets or wb.sheetnames):
         if sname not in wb.sheetnames:
             continue
-        ws = wb[sname]
+        rows = [_cells(r) for r in wb[sname].iter_rows(values_only=True)]
+
+        # 第一段:由「籤位序號｜單位｜姓名」建立這張分頁的單位詞彙。
+        # 雙打的兩種排版都存在(2023 是同列並排 序號|單位|姓名1|姓名2,
+        # 2024 是搭檔在上一列、該列沒有序號),不能只靠相鄰位置判斷,否則
+        # 並排的「姓名1｜姓名2」會被當成「單位｜姓名」(實測 2023 誤判 656 筆)。
+        units = set()
+        for cells in rows:
+            for i in range(len(cells) - 2):
+                seq, u, n = cells[i], cells[i + 1], cells[i + 2]
+                if seq.isdigit() and _is_unit(u) and _is_name(_SEED.sub("", n).strip()):
+                    units.add(u)
+
+        # 第二段:找出該列的單位欄,把它後面連續的姓名都收下(雙打會有兩位)
         current = sname
-        for row in ws.iter_rows(values_only=True):
-            cells = _cells(row)
+        for cells in rows:
             for c in cells:
                 if c and EVENT_PAT.search(c) and len(c) <= 24:
-                    current = EVENT_PAT.sub(lambda m: m.group(1), c).strip()
-                    current = re.sub(r"\s*\d+[-–]\d+\s*$", "", current).strip()
+                    current = re.sub(r"\s*\d+[-–]\d+\s*$", "", c).strip()
                     break
-            # 「單位｜姓名」相鄰即成立,不要求前面有籤位序號:雙打的一組佔兩列,
-            # 第一位搭檔那列沒有序號(實測 U9男雙 r648 吳敏岳 / r649「1」顏弘寔),
-            # 若強制要有序號會漏掉每一組的第一位。
-            for i in range(len(cells) - 1):
-                unit, name = cells[i], cells[i + 1]
-                if not unit or not name:
+            for i, unit in enumerate(cells):
+                if unit not in units or not unit:
                     continue
-                nm = _SEED.sub("", name).strip()
-                if _is_unit(unit) and _is_name(nm):
+                for nxt in cells[i + 1:i + 5]:
+                    if not nxt:
+                        continue
+                    nm = _SEED.sub("", nxt).strip()
+                    if not _is_name(nm) or nm in units:
+                        break
                     roster.setdefault(current, [])
                     if (unit, nm) not in roster[current]:
                         roster[current].append((unit, nm))
+                break
     wb.close()
     return roster
 
