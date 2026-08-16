@@ -89,15 +89,16 @@ function render() {
   html += `<div class="card"><div class="pad">
     ${statusBadge(T.status)} <span class="chip off">${esc(T.city)}</span>
     ${T.category ? `<span class="chip cat">${esc(T.category)}</span>` : ""}
+    <span class="chip src">${esc(sourceLabel(T))}</span>
     <div class="kv" style="margin-top:10px">
       <span class="k">比賽日期</span><span>${fmtRange(T.dateStart, T.dateEnd)}</span>
       <span class="k">報名期間</span><span>${fmtRange(T.registerStart, T.registerEnd)}</span>
       <span class="k">比賽地點</span><span>${esc(T.venue || "—")}</span>
     </div>
     <div style="margin-top:10px">
-      <a class="btn-link" target="_blank" rel="noopener"
-         href="https://livescore.efsoft.net/golivequery.php?openid=${encodeURIComponent(T.openid)}">🔗 官方賽事查詢</a>
-      ${T.status === "registering" ? `<a class="btn-link" target="_blank" rel="noopener"
+      ${officialUrl(T) ? `<a class="btn-link" target="_blank" rel="noopener"
+         href="${esc(officialUrl(T))}">🔗 官方賽事查詢</a>` : ""}
+      ${T.status === "registering" && sourceOf(T) === "mylivescore" ? `<a class="btn-link" target="_blank" rel="noopener"
          href="https://ef-regist.com/chkagreement/agreement.php?id=${encodeURIComponent(T.openid)}">📝 線上報名</a>` : ""}
     </div>
   </div></div>`;
@@ -155,7 +156,15 @@ function render() {
         <td>${(s.members || []).flatMap(splitMembers).map(playerLink).join("、") || "—"}</td>
       </tr>`;
       }).join("") + `</table></div>
-      <div class="note">名次由決賽比分自動推導${T.standings.some(s => s.source === "pdf") ? ",部分由官方成績 PDF 匯入" : ""};循環賽制組別可能無法推導。${anyPromo ? "標「晉甲」者為晉升中華民國羽球協會甲組之選手。" : ""}</div>`;
+      <div class="note">${(() => {
+        const srcs = new Set(T.standings.map(s => s.source || "derived"));
+        const parts = [];
+        if (srcs.has("derived")) parts.push("由決賽比分自動推導(循環賽制組別可能無法推導)");
+        if (srcs.has("official")) parts.push("由主辦單位公布的成績總表匯入");
+        if (srcs.has("pdf")) parts.push("由官方成績 PDF 匯入");
+        if (srcs.has("ocr")) parts.push("由官方成績表圖片辨識並比對參賽名冊校正");
+        return "名次" + parts.join(";") + "。";
+      })()}${anyPromo ? "標「晉甲」者為晉升中華民國羽球協會甲組之選手。" : ""}</div>`;
   }
 
   const groups = T.groups || [];

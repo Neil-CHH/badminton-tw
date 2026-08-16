@@ -1,3 +1,4 @@
-inbox/*.pdf
+# inbox 是待匯入/待解析素材的暫存區(PDF、tsba 成績圖與名冊 xlsx),都不進版控
+inbox/
 __pycache__/
 *.pyc

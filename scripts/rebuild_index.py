@@ -13,6 +13,8 @@ import re
 import sys
 from pathlib import Path
 
+from sources_common import source_of
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "docs" / "data"
 TOURN_DIR = DATA_DIR / "tournaments"
@@ -60,6 +62,7 @@ def main():
         oid = t["openid"]
         index.append({
             "openid": oid,
+            "source": source_of(t),
             "name": t["name"],
             "city": t.get("city", ""),
             "status": t.get("status", ""),

@@ -151,30 +151,41 @@ def check_dates(tours):
             warn(f"{oid} {t['name'][:26]} 缺 dateStart")
 
 
-def check_standings(tours):
-    """只查 derived 名次。
+# 官方公布的名次(PDF/主辦平台總表)本來就會並列與跳號(依報名組數取 N 名,
+# 第三名兩位、第五名四位),不該報。derived 由決賽勝負推導,重複或跳號代表推導有問題。
+AUTHORITATIVE = {"pdf", "official"}
 
-    PDF 匯入的名次本來就會有並列(同 rank 多筆)與跳號(依報名組數取 N 名),
-    目前 101 / 48 個組別屬於這種正常情形,不該報。derived 由決賽勝負推導,
-    出現重複或跳號代表推導邏輯有問題。
-    """
-    bad = 0
+
+def check_standings(tours):
+    """查 derived 名次的重複/跳號,以及 ocr 名次(機器讀圖)的合理性。"""
+    bad = ocr_bad = 0
     for oid, t in sorted(tours.items()):
         groups = {}
         for s in t.get("standings", []):
-            if s.get("source") == "pdf":
+            if s.get("source") in AUTHORITATIVE:
                 continue
-            groups.setdefault(s.get("group", ""), []).append(s.get("rank"))
-        for g, ranks in groups.items():
+            groups.setdefault(s.get("group", ""), []).append((s.get("rank"), s.get("source")))
+        for g, rows in groups.items():
+            src = "ocr" if any(x[1] == "ocr" for x in rows) else "derived"
+            ranks = [r for r, _ in rows]
             rs = [r for r in ranks if r is not None]
             if len(rs) != len(ranks):
-                bad += 1
-                warn(f"{oid} 組別「{g}」有名次為空的 derived 紀錄")
+                warn(f"{oid} 組別「{g}」有名次為空的 {src} 紀錄")
             elif rs and sorted(rs) != list(range(1, max(rs) + 1)):
-                bad += 1
-                warn(f"{oid} 組別「{g}」derived 名次異常:{sorted(rs)}")
+                # ocr 允許並列(官方成績圖同樣有並列名次),只查跳號與重複的第一名
+                dup_first = rs.count(1) > 1
+                gap = sorted(set(rs)) != list(range(1, max(rs) + 1))
+                if src == "ocr" and not (dup_first or gap):
+                    continue
+                warn(f"{oid} 組別「{g}」{src} 名次異常:{sorted(rs)}")
+            else:
+                continue
+            bad += 1
+            ocr_bad += src == "ocr"
     if not bad:
-        print("[OK] derived 名次:無重複或跳號")
+        print("[OK] derived / ocr 名次:無重複或跳號")
+    elif ocr_bad:
+        print(f"[提醒] 其中 {ocr_bad} 個組別來自圖片解析(ocr),建議對照原圖抽查")
 
 
 def report_gaps(tours):

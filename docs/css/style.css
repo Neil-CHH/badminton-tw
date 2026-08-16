@@ -19,6 +19,8 @@
   --chip-off-bg: #f0f1f0;
   --cat-bg: #fbf2d9;
   --cat-text: #8a6d12;
+  --src-bg: #e9eef6;
+  --src-text: #4a6285;
   --promoted-bg: #fdf8e8;
   --th-bg: #fafbfa;
   --danger: #d64530;
@@ -48,6 +50,8 @@
     --chip-off-bg: #272d29;
     --cat-bg: #3a3320;
     --cat-text: #d9bc66;
+    --src-bg: #232c38;
+    --src-text: #9db2d0;
     --promoted-bg: #2e2a1c;
     --th-bg: #212823;
     --danger: #ef7160;
@@ -157,6 +161,7 @@ a.chip:active { background: var(--chip-bg-active); }
 .chip.toggle.warn { border-color: var(--orange); }
 .chip.toggle.warn:not(.on) { color: var(--orange); background: transparent; }
 .chip.cat { background: var(--cat-bg); color: var(--cat-text); font-weight: 600; }
+.chip.src { background: var(--src-bg); color: var(--src-text); }
 
 .btn-mini {
   display: inline-block; padding: 4px 12px; margin: 2px 6px 2px 0;

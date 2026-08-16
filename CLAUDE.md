@@ -1,8 +1,29 @@
 # 羽球賽事資料庫(PWA + 本地留底)
 
 台灣羽球賽事資料庫:賽事資訊、逐場比分、各組名次。核心查詢是「以學校/單位為中心」與
-「以選手為中心」的跨賽事查詢。資料來源 mylivescore.tw,每月以 `/badminton-update` 手動更新,
-歷史 PDF 以 `/badminton-import` 匯入。
+「以選手為中心」的跨賽事查詢。每月以 `/badminton-update` 手動更新,歷史 PDF 以
+`/badminton-import` 匯入。
+
+## 三個資料來源
+
+賽事 JSON 與 index.json 都有頂層 `source` 欄位;`sources_common.source_of()` 對舊資料
+(沒有該欄位)會由 openid 前綴回推。openid 命名空間:mylivescore 用純數字、
+其餘用 `lapgo-{cid}` / `tsba-{年}-{系列}` / `manual-{年}-{slug}`。
+
+| 來源 | openid | 賽事清單 | 逐場比分 | 名次 |
+|---|---|---|---|---|
+| mylivescore.tw | `250115` | API | API | 由比分推導 `derived`;PDF 匯入 `pdf` 覆蓋 |
+| lapgo.com.tw | `lapgo-122` | API | API | 官方成績總表 API → `official`(可到第 5 名) |
+| tsbadminton.url.tw | `tsba-2024-會長盃` | 分類頁 HTML | ❌ 無 | 成績圖片視覺解析 + 名冊校對 → `ocr` |
+
+**名次優先序**(`sources_common.merge_standings`,以「組別」為單位取最高者,同組不混用):
+`pdf` ≧ `official` > `ocr` > `derived`。
+
+**正規化契約(最重要)**:`rebuild_index.py` 與 `docs/tournament.html` 都直接讀 mylivescore
+原始 match 形狀。新來源必須輸出同樣 14 個 key(全為字串):`groupName / match / date /
+time / teamA / teamB / matchtype / stadium / winner / Asidescore / Bsidescore / abstain /
+HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選手/單位統計**——
+改動抓取程式後,務必抽一位該賽事的選手確認勝負統計不是空的。
 
 ## 架構
 
@@ -13,10 +34,18 @@
     Python `rebuild_index.shard_of` 與 JS `common.js shardOf` 演算法必須一致)
   - `data/tournaments/{openid}.json` 單場賽事完整資料(含逐場比分與官方文件連結)
   - 官方 PDF **不留底**(使用者決定):documents/regulation.pdf/resultPdf 都是外部 URL
-- `scripts/scrape.py` — API 抓取+組別標籤+名次推導(`--full` 全量)。結尾自動跑 rebuild_index
+- `scripts/update_all.py` — **三來源總入口**,依序跑各 scraper 後只重建一次索引;
+  任一來源失敗不中斷其他來源(`--only`、`--full`、`--stage-results`)
+- `scripts/sources_common.py` — 跨來源共用:`source_of` / `merge_standings` /
+  `write_if_changed` / `city_from_text` / `NON_BADMINTON` 排除規則 / 帶 cookie 的 `Http`
+- `scripts/scrape.py` — mylivescore:API 抓取+組別標籤+名次推導(`--full`、`--no-index`)
+- `scripts/scrape_lapgo.py` — lapgo:比分正規化 + 官方成績總表 → standings
+- `scripts/scrape_tsba.py` — tsba:文件清單 +(`--stage-results`)備妥成績圖與名冊
+- `scripts/tsba_xlsx.py` — 由籤表 xlsx 抽參賽名冊與比賽日期
+- `scripts/tsba_reconcile.py` — 成績圖解析結果 × 名冊校對 → `source:"ocr"` 的 standings
 - `scripts/rebuild_index.py` — 由 tournaments/*.json 重建索引與分片(匯入後必跑)
 - `scripts/verify_data.py` — 資料健檢(連結一致性/索引新鮮度/分片落點/亂碼/缺口),只讀不寫
-- `inbox/` — 待匯入 PDF 暫放
+- `inbox/` — 待匯入 PDF 與 tsba 待解析素材暫放(整個目錄 gitignore)
 
 ## mylivescore.tw API(2026-06 偵察,細節勿憑記憶,以 scrape.py 為準)
 
@@ -37,6 +66,43 @@
   注意回應 JSON 含原始換行,要用 `json.JSONDecoder(strict=False)`。
 - 網站改版時:抓 `matches.html` 找 `matchesmain.js`,看 fetch 端點與 payload。
 
+## lapgo.com.tw API(2026-08 偵察,以 scrape_lapgo.py 為準)
+
+- 免登入。從任一頁面抓 `<meta name="csrf-token">`,之後 POST 都帶 `X-CSRF-TOKEN` + cookie。
+- 賽事清單:`POST /getCompetitionByStatus` body `status=all`
+  → `{now, sign_up, coming_soon, finish, notyet}`;`type=='羽球比賽'` 才收,
+  但**主辦常把籃球/排球/樂樂棒球標成羽球比賽**,要再用賽名過濾(`NON_BADMINTON`)。
+- 逐場比分:`POST /web/getSessionScoreGrouped` body `cid={id}` → `{table:[...]}`。
+- 官方成績總表:`POST /eventinfo/getResultsSummary` body `cid={id}`(名次到第 5 名)。
+- **`show_livescore` 旗標不可靠**(同 mylivescore 的 IsSystem):實測 20 場
+  `show_livescore=0` 的已結束賽事有 17 場仍回傳完整比分 → 一律試抓,不看旗標。
+- **一列 = 一局(單雙打)或一點(團體)**,依 `(session_group_id, session_num)` 併成一場;
+  `point_sum` 是全場局/點數(→ Asidescore/Bsidescore),`score` 是該局分數(→ scoreinfo)。
+  `point_count>=10` 是團體賽彙總列,只取第一列並改用 `score` 判勝負。
+- **`name` 是「組別+場次代號」不是組別**,代號寫法各主辦不同(`(一)`、`A1-A3`、`[9]`);
+  真正的組別是 `session_group_id`,組別名取同 sgid 底下所有 name 的共同前綴。
+- 比分與成績總表的**組別名寫法不一致**(`U10女單` vs `U10歲組女單`),
+  `align_groups()` 做一對一貪婪配對;不強制一對一會把多組併成一組。
+- 網站改版時:抓賽事頁的 `js/web.js`,搜 `url:` 看端點;成績總表在 `js/resultsSummary.js`。
+
+## tsbadminton.url.tw(2026-08 偵察,以 scrape_tsba.py 為準)
+
+中華民國全民羽球發展協會,主辦全民會長盃 / 世界清晨盃 / 羽您有約,歷屆紀錄留在站上。
+
+- **必須帶瀏覽器 User-Agent,否則整站回 HTTP 500。**
+- **附件有防盜連**:`/upload_attach/` 只認同站 Referer,外站(含本 PWA)一律 403。
+  → `documents[].url` 一律指向明細頁 `hot_{id}.html`,絕不可直接放附件網址。
+- 分類頁:`hot_cg105163`(會長盃)、`hot_cg100948`(清晨盃)、`hot_cg118656`(羽您有約);
+  歷屆成績:`custom_cg45241`(會長盃)、`custom_cg45240`(清晨盃)。
+  解析可見的 `<a href="(hot|custom)_\d+.html">標題</a>` 即可,不必靠 schema.org 區塊。
+- **`/upload_attach/{epoch}.{xlsx|pdf}` 的檔名是 unix epoch**,用來當文件日期,
+  也用來替標題沒寫年份的文件推年份。
+- **成績只有 JPG 圖片**(`/editor_images/`);賽程 xlsx 是空間排版的籤表樹,無法轉逐場比分。
+  但籤表裡「單位｜姓名」是真文字,`tsba_xlsx.extract_roster` 抽成名冊當校對字典。
+  **雙打一組佔兩列,第一位搭檔那列沒有籤位序號**,抽取時不能要求有序號。
+- 賽事日期只有賽程表 xlsx 的日賽程分頁才有(列表頁的日期是公告有效期,不是賽期)。
+- 早年附件是 `.xls` 舊二進位格式,openpyxl 讀不了,只收 `.xlsx`。
+
 ## 資料模型重點
 
 - `matches[]` 為 API schedule 原樣:teamA/B=單位名(自由填寫,同校多種寫法,**不做正規化**,
@@ -50,9 +116,15 @@
 ## 常用指令
 
 ```
-python scripts/scrape.py          # 每月增量更新
-python scripts/scrape.py --full   # 全量重抓
-python scripts/fetch_docs.py      # 更新官方文件連結(增量,不下載)
+python scripts/update_all.py             # 每月增量更新(三來源 + fetch_docs + 重建索引)
+python scripts/update_all.py --full      # 全量重抓(對 mylivescore/lapgo 生效)
+python scripts/update_all.py --only lapgo        # 只跑單一來源
+python scripts/scrape.py          # 只跑 mylivescore(--full / --no-index)
+python scripts/scrape_lapgo.py    # 只跑 lapgo(--full / --only {cid} / --dry-run)
+python scripts/scrape_tsba.py     # 只跑 tsba(--dry-run / --no-detail)
+python scripts/scrape_tsba.py --stage-results    # 備妥 tsba 成績圖與名冊供視覺解析
+python scripts/tsba_reconcile.py --openid X --input raw.json [--apply]  # 名冊校對
+python scripts/fetch_docs.py      # 更新官方文件連結(增量,不下載;只對 mylivescore)
 python scripts/fetch_docs.py --relink   # 不打 API,只重新同步 regulation.pdf/resultPdf
 python scripts/rebuild_index.py   # 重建索引(匯入後)
 python scripts/verify_data.py --summary  # 健檢+新增賽事摘要(部署前跑,exit 1 表示要修)

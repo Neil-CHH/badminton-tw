@@ -2,8 +2,9 @@
 """mylivescore.tw 羽球賽事資料抓取。
 
 用法:
-    python scripts/scrape.py          # 增量:只抓新賽事 / 狀態變更 / 進行中賽事
-    python scripts/scrape.py --full   # 全量:所有賽事重抓(含逐場比分)
+    python scripts/scrape.py             # 增量:只抓新賽事 / 狀態變更 / 進行中賽事
+    python scripts/scrape.py --full      # 全量:所有賽事重抓(含逐場比分)
+    python scripts/scrape.py --no-index  # 不重建索引(由 update_all.py 最後統一重建)
 
 資料寫入 docs/data/tournaments/{openid}.json,結尾自動呼叫 rebuild_index.py。
 抓回來的內容與現有檔案相同(除 lastUpdated)時不寫檔,故「更新 N」代表真的有變動。
@@ -18,6 +19,9 @@ import urllib.request
 import urllib.error
 from datetime import date
 from pathlib import Path
+
+from sources_common import (NON_BADMINTON, SRC_MYLIVESCORE, merge_standings,
+                            write_if_changed)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "docs" / "data"
@@ -35,7 +39,7 @@ CITY = {
     "21": "金門縣", "22": "連江縣",
 }
 STATUS_NAME = {"1": "registering", "2": "ongoing", "3": "finished"}
-EXCLUDE_PAT = re.compile(r"匹克球|桌球|研習|裁判|柔道")
+EXCLUDE_PAT = NON_BADMINTON  # 三個來源共用同一份非羽球賽事排除規則
 
 
 def derive_category(name):
@@ -255,18 +259,11 @@ def load_existing(openid):
     return None
 
 
-def same_content(a, b):
-    """除 lastUpdated 外完全相同。用來避免每月把沒變的賽事整份重寫(製造 git 噪音)。"""
-    if not a or not b:
-        return False
-    return ({k: v for k, v in a.items() if k != "lastUpdated"}
-            == {k: v for k, v in b.items() if k != "lastUpdated"})
-
-
 def scrape_tournament(api, info, status_key, existing):
     openid = info["OpenID"]
     record = {
         "openid": openid,
+        "source": SRC_MYLIVESCORE,
         "name": info["MName"],
         "city": CITY.get(info.get("CityName", ""), "其他"),
         "status": STATUS_NAME[status_key],
@@ -326,15 +323,8 @@ def scrape_tournament(api, info, status_key, existing):
                                "drawUrl": None})
         record["groups"] = groups
 
-        # 名次:PDF 匯入的名次優先保留,只更新 derived 部分
-        pdf_standings = [s for s in record["standings"] if s.get("source") == "pdf"]
-        if pdf_standings:
-            pdf_groups = {s["group"] for s in pdf_standings}
-            derived = [s for s in derive_standings(schedule) if s["group"] not in pdf_groups]
-            record["standings"] = sorted(pdf_standings + derived,
-                                         key=lambda s: (s["group"], s["rank"]))
-        else:
-            record["standings"] = derive_standings(schedule)
+        # 名次:PDF 匯入的名次優先保留,只更新 derived 部分(優先序見 sources_common)
+        record["standings"] = merge_standings(record["standings"], derive_standings(schedule))
 
     return record
 
@@ -378,12 +368,9 @@ def main():
             except Exception as e:  # noqa: BLE001
                 print(f"  [錯誤] {openid} {info['MName']}: {e}")
                 continue
-            if same_content(record, existing):
+            if not write_if_changed(TOURN_DIR / f"{openid}.json", record, existing):
                 unchanged += 1
                 continue
-            out = TOURN_DIR / f"{openid}.json"
-            out.write_text(json.dumps(record, ensure_ascii=False, separators=(",", ":")),
-                           encoding="utf-8")
             if existing is None:
                 new_count += 1
                 print(f"  [新增] {openid} {record['name']} ({len(record['matches'])} 場比賽)")
@@ -392,6 +379,8 @@ def main():
                 print(f"  [更新] {openid} {record['name']} ({len(record['matches'])} 場比賽)")
 
     print(f"\n完成:新增 {new_count}、更新 {updated}、無變化 {unchanged}、略過 {skipped}")
+    if "--no-index" in sys.argv:
+        return
     print("重建索引…")
     import rebuild_index  # noqa: PLC0415
     rebuild_index.main()

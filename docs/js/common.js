@@ -46,6 +46,26 @@ function splitMembers(raw) {
 
 function qs(name) { return new URLSearchParams(location.search).get(name) || ""; }
 
+/* ---------- 資料來源 ---------- */
+/* 舊資料沒有 source 欄位,一律視為 mylivescore(與 sources_common.source_of 一致) */
+const SOURCES = {
+  mylivescore: { label: "MY Livescore", site: "https://mylivescore.tw/matches.html" },
+  lapgo: { label: "LAPGO", site: "https://lapgo.com.tw/activity" },
+  tsba: { label: "全民羽球發展協會", site: "https://www.tsbadminton.url.tw/" },
+  manual: { label: "PDF 匯入", site: null },
+};
+function sourceOf(t) { return (t && t.source) || "mylivescore"; }
+function sourceLabel(t) { return (SOURCES[sourceOf(t)] || SOURCES.mylivescore).label; }
+/* 官方賽事頁:非 mylivescore 的來源把網址存在 sourceUrl,不能套 mylivescore 的樣板 */
+function officialUrl(t) {
+  const src = sourceOf(t);
+  if (t.sourceUrl) return t.sourceUrl;
+  if (src === "mylivescore") {
+    return `https://livescore.efsoft.net/golivequery.php?openid=${encodeURIComponent(t.openid)}`;
+  }
+  return (SOURCES[src] || {}).site || null;
+}
+
 /* ---------- 選手/單位分片 ---------- */
 /* 與 scripts/rebuild_index.py 的 shard_of 完全一致:h = (h*31 + codepoint) mod 2^32 */
 function shardOf(name, n = 16) {

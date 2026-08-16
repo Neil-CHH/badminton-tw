@@ -18,6 +18,8 @@ import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
 
+from sources_common import SRC_MYLIVESCORE, source_of
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "docs" / "data"
 TOURN_DIR = DATA_DIR / "tournaments"
@@ -132,7 +134,7 @@ def relink():
     n = 0
     for p in sorted(TOURN_DIR.glob("*.json")):
         t = json.loads(p.read_text(encoding="utf-8"))
-        if t["openid"].startswith("manual-"):
+        if source_of(t) != SRC_MYLIVESCORE:
             continue
         if sync_links(t):
             n += 1
@@ -152,7 +154,8 @@ def main():
     files = sorted(TOURN_DIR.glob("*.json"))
     for i, p in enumerate(files, 1):
         t = json.loads(p.read_text(encoding="utf-8"))
-        if t["openid"].startswith("manual-"):
+        # 只有 mylivescore 賽事能用 links.php 查文件;其他來源的 documents 由各自 scraper 維護
+        if source_of(t) != SRC_MYLIVESCORE:
             continue
         # 增量:已結束且已有成績連結的就不重查,但賽後 RECHECK_DAYS 天內仍追蹤改版
         if not force and (t.get("dateEnd") or "") < recheck_since \
