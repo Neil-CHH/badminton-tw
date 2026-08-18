@@ -268,15 +268,17 @@ def enrich(http, entries, use_detail=True):
     return cache
 
 
-def get_schedule_xlsx(http, openid, info, cache):
-    """下載該屆的賽程表/秩序冊 xlsx 並存到 inbox/tsba/{openid}/roster.xlsx。
+def get_schedule_file(http, openid, info, cache):
+    """下載該屆的賽程表/秩序冊並存到 inbox/tsba/{openid}/roster.{xlsx|pdf}。
 
     賽期與參賽名冊都只能從這份檔案取得,所以抓一次存起來共用。
-    只收 .xlsx;早年的 .xls 是舊二進位格式,openpyxl 讀不了。
+    官方有些年份發 xlsx、有些發 PDF,兩者版面一樣,tsba_xlsx 都吃得下;
+    早年的 .xls 是舊二進位格式,openpyxl 讀不了,略過。
     """
-    dest = INBOX / openid / "roster.xlsx"
-    if dest.exists():
-        return dest
+    for ext in ("xlsx", "pdf"):
+        p = INBOX / openid / f"roster.{ext}"
+        if p.exists():
+            return p
     for d in sorted(info["docs"], key=lambda x: x.get("date") or "", reverse=True):
         if not _SCHEDULE_DOC.search(d["title"]):
             continue
@@ -286,18 +288,24 @@ def get_schedule_xlsx(http, openid, info, cache):
                 det = cache[d["id"]] = fetch_detail(http, d["id"])
             except Exception:  # noqa: BLE001
                 continue
-        xlsx = [u for u in det["attachments"] if u.lower().endswith(".xlsx")]
-        if not xlsx:
-            continue
-        try:
-            raw = http.get(xlsx[0], referer=f"{BASE}/{d['id']}.html")
-        except Exception as e:  # noqa: BLE001
-            print(f"  [警告] {openid} 下載賽程 xlsx 失敗: {e}")
-            continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(raw)
-        return dest
+        for ext in ("xlsx", "pdf"):
+            hit = [u for u in det["attachments"] if u.lower().endswith("." + ext)]
+            if not hit:
+                continue
+            try:
+                raw = http.get(hit[0], referer=f"{BASE}/{d['id']}.html")
+            except Exception as e:  # noqa: BLE001
+                print(f"  [警告] {openid} 下載賽程檔失敗: {e}")
+                continue
+            dest = INBOX / openid / f"roster.{ext}"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(raw)
+            return dest
     return None
+
+
+# 舊名稱,保留給既有呼叫端
+get_schedule_xlsx = get_schedule_file
 
 
 def fill_dates_from_schedule(http, openid, info, cache, existing):
@@ -308,9 +316,9 @@ def fill_dates_from_schedule(http, openid, info, cache, existing):
     if (existing or {}).get("dateStart"):
         return
     from tsba_xlsx import extract_dates  # noqa: PLC0415
-    path = get_schedule_xlsx(http, openid, info, cache)
-    if not path:
-        return
+    path = get_schedule_file(http, openid, info, cache)
+    if not path or str(path).lower().endswith(".pdf"):
+        return   # 日期抽取目前只支援 xlsx
     try:
         start, end = extract_dates(path, info["year"])
     except Exception as e:  # noqa: BLE001
@@ -325,6 +333,7 @@ def fill_dates_from_schedule(http, openid, info, cache, existing):
 # 門檻不設高:低於宣告數但內容正確的組別仍然有價值——名單的用途是
 # 「讓沒得名的選手查得到」,整組丟掉只會製造更多查不到的人。
 ENTRY_MIN_RATIO = 0.5
+ENTRY_MIN_TOTAL = 20   # 全場抽到的筆數低於此值,視為這份檔沒有可用文字
 
 
 def build_entries(path, warn=None):
@@ -340,6 +349,11 @@ def build_entries(path, warn=None):
         expected = 0
         if dec:
             expected = dec[0] * 2 if dec[1] in ("組", "隊") else dec[0]
+        # 組名還是 PDF 的頁碼代號,表示那頁沒有可辨識的組別標題(多半是掃描檔,
+        # 抽不到文字),這種資料不可靠,不收。
+        if re.fullmatch(r"p\d+", group):
+            dropped.append((group, len(rows), expected))
+            continue
         if not rows or (expected and len(rows) < expected * ENTRY_MIN_RATIO):
             dropped.append((group, len(rows), expected))
             continue
@@ -349,6 +363,11 @@ def build_entries(path, warn=None):
         for unit, name in rows:
             entries.append({"group": group, "unit": unit,
                             "members": [name], "source": "draw"})
+    # 一場賽事的籤表少說也有上百人;只抽到個位數代表這份檔根本沒有可用文字
+    # (實測 2025 羽您有約的 PDF 是掃描檔,只抽到 5 筆雜訊),整份放棄。
+    if len(entries) < ENTRY_MIN_TOTAL:
+        return [], None, dropped + [("(全部)", len(entries), 0)]
+
     # 宣告數為 0 的組別無從驗證,覆蓋率只反映有宣告數的部分
     coverage = round(got_total / exp_total, 3) if exp_total else None
     if dropped and warn is not None:
@@ -455,7 +474,7 @@ def main():
             fill_dates_from_schedule(http, openid, info, cache, existing)
         # 參賽名單:只在還沒有時抓一次(比照 dateStart 的作法)
         if want_entries and not (existing or {}).get("entries"):
-            path = get_schedule_xlsx(http, openid, info, cache)
+            path = get_schedule_file(http, openid, info, cache)
             if path:
                 try:
                     ents, cov, dropped = build_entries(path)
@@ -469,7 +488,7 @@ def main():
                     for g, got, exp in dropped[:5]:
                         print(f"      [淘汰] {g}:抽到 {got} 筆,宣告 {exp}")
             elif not (existing or {}).get("entries"):
-                print(f"  [提醒] {openid} 沒有可用的 .xlsx 賽程表,無法建立參賽名單")
+                print(f"  [提醒] {openid} 沒有可用的賽程表(.xlsx/.pdf),無法建立參賽名單")
         record = build_record(openid, info, existing)
         label = "新增" if existing is None else "更新"
         detail = f"{len(record['documents'])} 份文件"
