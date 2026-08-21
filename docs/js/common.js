@@ -28,6 +28,25 @@ function fmtRange(a, b) {
   return `${fa} ~ ${fb}`;
 }
 
+/* 少數賽事的 dateStart 是錯的(複製到別場、日期反轉、0000-00-00)。index.json 由
+   rebuild_index 修正過,但本頁的賽事詳情是直接讀賽事檔,得在這裡套同一條規則,
+   否則列表頁與詳情頁的日期會不一致。
+   與 scripts/sources_common.py 的 effective_dates() 必須完全一致。 */
+const BAD_DATES = new Set(["", "0000-00-00"]);
+function matchDateRange(t) {
+  const ds = [...new Set((t.matches || []).map(m => m.date).filter(d => d && !BAD_DATES.has(d)))].sort();
+  return ds.length ? [ds[0], ds[ds.length - 1]] : null;
+}
+function effectiveDates(t) {
+  const ds = t.dateStart, de = t.dateEnd || ds;
+  const real = matchDateRange(t);
+  const clean = v => (!v || BAD_DATES.has(v)) ? "" : v;
+  if (!real) return [clean(ds), clean(de)];
+  if (!ds || BAD_DATES.has(ds)) return real;
+  const end = (!de || BAD_DATES.has(de)) ? ds : de;
+  return (ds <= real[1] && real[0] <= end) ? [ds, end] : real;
+}
+
 const STATUS_LABEL = { registering: "報名中", ongoing: "進行中", finished: "已結束" };
 function statusBadge(st) {
   const label = STATUS_LABEL[st] || st;

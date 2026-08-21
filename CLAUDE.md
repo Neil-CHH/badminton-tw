@@ -30,6 +30,25 @@
 `rebuild_index` 只登錄出賽事實、不動勝負;該選手在該賽事既無比分也無名次時,
 分片紀錄加 `"e": 1`,前端顯示「僅參賽」。目前只有 tsba 有資料,欄位本身是通用的。
 
+**跨來源去重**:同一場真實賽事會被兩個平台各收一次(實測 9 場 mylivescore × lapgo)。
+`rebuild_index` 以 openid 為唯一鍵逐檔累加,不去重就會出現兩張卡、選手/單位的場次與
+勝負獲獎全部翻倍(實測影響 5,944 位選手)。`scripts/dedupe.py` 自動判定,四項條件全中才算:
+
+1. **來源不同** —— 同來源一律不自動處理。同來源的近似賽名有 130 組候選、**全部是誤判**
+   (大專資格賽分區、群岳盃分站、運動 i 臺灣各鄉鎮、小樹苗兩梯…),真重複一組都沒有。
+2. 賽名正規化後相似度 ≥ 0.90,且**年份 token 沒有互斥**(「114年…資格賽」與「115年…」
+   相似度 0.95、組別全同、公告日期還重疊,只有年份能區分)。
+3. **實際比賽日期區間有交集** —— 區間取自 `matches[].date`,沒有比分才退回 `dateStart`。
+   不能只看 `dateStart`:357718 的 `dateStart` 是錯的(標 6/14、實際 12/27)。
+4. 組別集合 Jaccard ≥ 0.85(組名要正規化:LAPGO 常把組名截斷少了右括號)。
+
+保留 `SOURCE_PRIORITY` 高的那份(mylivescore > manual > lapgo > tsba),另一份(shadow)
+**刪檔**並登錄進 `scripts/duplicates.json`,爬蟲之後跳過不再抓。刪除前還要通過
+**支配性檢查**:shadow 不能有任何 canonical 缺少的東西(場次更多、獨有組別、名次來源更優先、
+獨有 `entries[]`)—— 任一項不過就只警告不動檔,交給人判斷。另有**斷路器**:單次要刪超過
+3% 就整批中止。**支配性檢查不可用名次逐列比對** —— canonical 有 pdf 名次時兩邊逐列本來就
+不同(307030 的名次列 Jaccard 只有 0.78),那正是 canonical 較優的證據。
+
 **正規化契約(最重要)**:`rebuild_index.py` 與 `docs/tournament.html` 都直接讀 mylivescore
 原始 match 形狀。新來源必須輸出同樣 14 個 key(全為字串):`groupName / match / date /
 time / teamA / teamB / matchtype / stadium / winner / Asidescore / Bsidescore / abstain /
@@ -54,6 +73,8 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
 - `scripts/scrape_tsba.py` — tsba:文件清單 +(`--stage-results`)備妥成績圖與名冊
 - `scripts/tsba_xlsx.py` — 由籤表 xlsx 抽參賽名冊與比賽日期
 - `scripts/tsba_reconcile.py` — 成績圖解析結果 × 名冊校對 → `source:"ocr"` 的 standings
+- `scripts/dedupe.py` — 跨來源重複賽事偵測與刪檔(重建索引前跑);
+  登錄檔 `scripts/duplicates.json` 同時是爬蟲的阻擋清單
 - `scripts/rebuild_index.py` — 由 tournaments/*.json 重建索引與分片(匯入後必跑)
 - `scripts/verify_data.py` — 資料健檢(連結一致性/索引新鮮度/分片落點/亂碼/缺口),只讀不寫
 - `inbox/` — 待匯入 PDF 與 tsba 待解析素材暫放(整個目錄 gitignore)
@@ -148,6 +169,8 @@ python scripts/scrape_tsba.py --stage-results    # 備妥 tsba 成績圖與名�
 python scripts/tsba_reconcile.py --openid X --input raw.json [--apply]  # 名冊校對
 python scripts/fetch_docs.py      # 更新官方文件連結(增量,不下載;只對 mylivescore)
 python scripts/fetch_docs.py --relink   # 不打 API,只重新同步 regulation.pdf/resultPdf
+python scripts/dedupe.py --dry-run  # 看跨來源重複判定,不動檔
+python scripts/dedupe.py          # 刪除重複賽事檔並登錄(update_all 已內含)
 python scripts/rebuild_index.py   # 重建索引(匯入後)
 python scripts/verify_data.py --summary  # 健檢+新增賽事摘要(部署前跑,exit 1 表示要修)
 python -m http.server 8765 -d docs   # 本地預覽
@@ -158,6 +181,13 @@ python -m http.server 8765 -d docs   # 本地預覽
 ## 注意
 
 - Windows console 編碼:python 一律 `-X utf8`,stdout 需 reconfigure(腳本已內建)。
+- **跨語言契約有三個,改一邊就要改另一邊**:`rebuild_index.shard_of` ↔ `common.js shardOf`、
+  mylivescore 的 14 個 match key、`sources_common.effective_dates` ↔ `common.js effectiveDates`。
+- 賽事日期(2026-08):少數賽事的 `dateStart` 是錯的(整串複製到別場、日期反轉、
+  `0000-00-00`),會讓列表排序與年份篩選錯位。`effective_dates` 只在**與實際比分日期完全
+  沒有交集時**才改用 `matches[].date` 推得的區間(目前 5 場),「公告 2/28 起、實際 3/1
+  開打」這種正常落差一律保留原值。**賽事 JSON 本體不改寫**(保持來源忠實,也避免爬蟲每月
+  覆寫→rebuild 再補寫的 git 噪音),所以直接讀賽事檔的 tournament.html 必須自己套同一條規則。
 - 選手/單位索引已分片(2026-07):搜尋頁只載 search-index.json(~1.5MB),選手/單位頁依
   名稱雜湊載對應分片(最大單片 <1MB)。選手勝負統計(w/l)由 rebuild_index 預算進分片。
 - sw.js shell 快取為 stale-while-revalidate,改前端後不需手動升 VERSION;data 為

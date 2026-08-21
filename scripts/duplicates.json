@@ -1,0 +1,68 @@
+{
+  "_note": "自動偵測的跨來源重複賽事(見 scripts/dedupe.py)。shadow 檔已刪除,爬蟲會跳過不再抓取;需要復原時可由 git 歷史取回。",
+  "pairs": [
+    {
+      "canonical": "262259",
+      "shadow": "lapgo-111",
+      "name": "2026未來之星國際羽球錦標賽(台中站)",
+      "shadowUrl": "https://lapgo.com.tw/web/futurestar202602",
+      "detected": "2026-08-21"
+    },
+    {
+      "canonical": "596098",
+      "shadow": "lapgo-45",
+      "name": "114年新竹市長盃羽球錦標賽",
+      "shadowUrl": "https://lapgo.com.tw/web/hcbad114002",
+      "detected": "2026-08-21"
+    },
+    {
+      "canonical": "258178",
+      "shadow": "lapgo-60",
+      "name": "2025年高雄李寧力羽美盃分級分齡羽球公開賽",
+      "shadowUrl": "https://lapgo.com.tw/web/kaohsiung202501",
+      "detected": "2026-08-21"
+    },
+    {
+      "canonical": "291714",
+      "shadow": "lapgo-62",
+      "name": "2025第二屆國際福爾摩沙盃羽球錦標賽",
+      "shadowUrl": "https://lapgo.com.tw/web/formosa2025",
+      "detected": "2026-08-21"
+    },
+    {
+      "canonical": "305923",
+      "shadow": "lapgo-63",
+      "name": "2025風城盃全國羽球挑戰賽",
+      "shadowUrl": "https://lapgo.com.tw/web/hcbad114005",
+      "detected": "2026-08-21"
+    },
+    {
+      "canonical": "307030",
+      "shadow": "lapgo-70",
+      "name": "2025彰化大佛盃全國羽球觀光錦標賽",
+      "shadowUrl": "https://lapgo.com.tw/web/buddhacup2025",
+      "detected": "2026-08-21"
+    },
+    {
+      "canonical": "357718",
+      "shadow": "lapgo-74",
+      "name": "2025年高雄李寧力羽美新手盃分級分齡羽球公開賽",
+      "shadowUrl": "https://lapgo.com.tw/web/kaohsiung202502",
+      "detected": "2026-08-21"
+    },
+    {
+      "canonical": "656215",
+      "shadow": "lapgo-87",
+      "name": "2026未來之星國際羽球錦標賽(高雄站)",
+      "shadowUrl": "https://lapgo.com.tw/web/futurestar202601",
+      "detected": "2026-08-21"
+    },
+    {
+      "canonical": "252119",
+      "shadow": "lapgo-98",
+      "name": "2026年高雄李寧力羽美盃分級分齡羽球公開賽",
+      "shadowUrl": "https://lapgo.com.tw/web/kaohsiung202601",
+      "detected": "2026-08-21"
+    }
+  ]
+}

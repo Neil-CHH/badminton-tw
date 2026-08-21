@@ -20,8 +20,8 @@ import urllib.error
 from datetime import date
 from pathlib import Path
 
-from sources_common import (NON_BADMINTON, SRC_MYLIVESCORE, merge_standings,
-                            write_if_changed)
+from sources_common import (NON_BADMINTON, SRC_MYLIVESCORE, blocked_openids,
+                            merge_standings, write_if_changed)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "docs" / "data"
@@ -335,6 +335,7 @@ def main():
     api = Api()
     print(f"liveresult host: {api.live_base}")
 
+    blocked = blocked_openids()
     new_count = updated = unchanged = skipped = 0
     seen_ids = set()
     for status_key in ("1", "2", "3"):
@@ -348,6 +349,9 @@ def main():
             seen_ids.add(openid)
             if EXCLUDE_PAT.search(info["MName"]):
                 print(f"  [警告] 排除非羽球賽事: {info['MName']}")
+                continue
+            # 已判定與其他來源重複並刪檔的賽事,不再抓也不再建檔(見 dedupe.py)
+            if openid in blocked:
                 continue
             existing = load_existing(openid)
             need = (

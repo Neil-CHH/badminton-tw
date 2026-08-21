@@ -15,7 +15,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import dedupe  # 共用去重判定,確保健檢與 dedupe.py 用的是同一套規則
 import rebuild_index  # 共用 shard_of,確保與前端 common.js 的分片演算法一致
+import sources_common
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "docs" / "data"
@@ -143,12 +145,53 @@ def check_mojibake(tours):
 
 
 def check_dates(tours):
+    """賽事日期。dateStart 錯掉(整串複製到別場、日期反轉、0000-00-00)會讓列表排序與
+    年份篩選錯位。有比分的由 effective_dates 自動修正(rebuild_index 已套用到索引),
+    沒有比分可推導的只能報出來。"""
+    fixed = []
     for oid, t in sorted(tours.items()):
         ds, de = t.get("dateStart") or "", t.get("dateEnd") or ""
+        eff = sources_common.effective_dates(t)
+        if eff != (ds, de or ds):
+            fixed.append((oid, t["name"], ds, de, eff))
+            continue
         if ds and de and ds > de:
-            warn(f"{oid} {t['name'][:26]} 日期反轉 {ds} ~ {de}(來源資料如此,列表排序會錯位)")
+            warn(f"{oid} {t['name'][:26]} 日期反轉 {ds} ~ {de}"
+                 f"(來源資料如此,且無比分可推導,列表排序會錯位)")
         if not ds:
             warn(f"{oid} {t['name'][:26]} 缺 dateStart")
+    if fixed:
+        print(f"[OK] 日期:{len(fixed)} 場的 dateStart 與實際比分日期不符,索引已自動改用比分日期")
+        for oid, name, ds, de, eff in fixed:
+            print(f"       {oid}  {ds or '(空)'}~{de or '(空)'}  →  {eff[0]}~{eff[1]}  {name[:30]}")
+
+
+def check_duplicates(tours):
+    """跨來源重複賽事:登錄檔一致性,以及還沒處理掉的重複。
+
+    重複賽事會讓列表出現兩張卡,選手/單位的場次與勝負獲獎全部翻倍,所以列為錯誤。
+    """
+    pairs = sources_common.load_duplicates()
+    for p in pairs:
+        if p.get("canonical") not in tours:
+            err(f"duplicates.json 的 canonical {p.get('canonical')} 找不到賽事檔 —— "
+                f"shadow {p.get('shadow')} 已刪,這場等於整個消失")
+        if p.get("shadow") in tours:
+            err(f"{p.get('shadow')} 已登錄為重複但賽事檔仍在 → 跑 python scripts/dedupe.py")
+
+    loaded = dedupe.load_all()
+    deletable, review = dedupe.detect(loaded)
+    for can, sh, ratio, _gj, _ in deletable:
+        err(f"{sh['openid']} 與 {can['openid']} 判定為同一場賽事(相似度 {ratio:.2f})"
+            f"但尚未去重 → 跑 python scripts/dedupe.py")
+    for can, sh, ratio, _gj, why in review:
+        warn(f"{can['openid']} 與 {sh['openid']} 疑似同一場(相似度 {ratio:.2f}),"
+             f"但{why} → 不自動處理,請人工確認")
+    for a, b, ratio, _gj in dedupe.same_source_candidates(loaded):
+        warn(f"同來源疑似重複:{a['openid']} 與 {b['openid']}(相似度 {ratio:.2f})"
+             f"「{a['name'][:24]}」→ 同來源一律不自動處理,請人工確認")
+    if not deletable and not review:
+        print(f"[OK] 跨來源去重:已登錄 {len(pairs)} 組,無新的重複候選")
 
 
 # 官方公布的名次(PDF/主辦平台總表)本來就會並列與跳號(依報名組數取 N 名,
@@ -271,6 +314,7 @@ def main():
     check_shards()
     check_mojibake(tours)
     check_dates(tours)
+    check_duplicates(tours)
     check_standings(tours)
 
     if errors:

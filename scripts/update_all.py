@@ -65,6 +65,11 @@ def main():
         ok, dt = run("scrape_tsba.py", ["--stage-results"], "tsba 成績圖/名冊備料")
         results.append(("stage-results", ok, dt))
 
+    # 先去重再重建索引:同一場賽事被兩個平台各收一次時只留一份,
+    # 否則列表會出現兩張卡、選手/單位的場次與勝負獲獎全部翻倍。
+    ok, dt = run("dedupe.py", [], "跨來源去重 (dedupe)")
+    results.append(("跨來源去重", ok, dt))
+
     ok, dt = run("rebuild_index.py", [], "重建索引 (rebuild_index)")
     results.append(("重建索引", ok, dt))
 

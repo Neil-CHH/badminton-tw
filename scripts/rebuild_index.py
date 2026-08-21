@@ -13,7 +13,7 @@ import re
 import sys
 from pathlib import Path
 
-from sources_common import source_of
+from sources_common import blocked_openids, effective_dates, source_of
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "docs" / "data"
@@ -48,8 +48,13 @@ def _to_int(v):
 
 
 def main():
+    # 跨來源重複的 shadow 賽事檔在 dedupe.py 就已刪除,這裡是防呆:
+    # 單獨跑 rebuild(例如 PDF 匯入後)時,萬一檔案被救回也不會再度重複計入。
+    blocked = blocked_openids()
     tournaments = []
     for p in sorted(TOURN_DIR.glob("*.json")):
+        if p.stem in blocked:
+            continue
         tournaments.append(json.loads(p.read_text(encoding="utf-8")))
 
     index = []
@@ -60,6 +65,11 @@ def main():
 
     for t in tournaments:
         oid = t["openid"]
+        # 少數賽事的 dateStart 是錯的(複製到別場、日期反轉、0000-00-00),
+        # 會讓列表排序與年份篩選錯位 → 與實際比分日期完全沒交集時改用比分推得的區間。
+        # 賽事 JSON 本體不動(保持來源忠實);tournament.html 以 common.js 的
+        # effectiveDates() 套用同一條規則,兩邊必須同步。
+        date_start, date_end = effective_dates(t)
         index.append({
             "openid": oid,
             "source": source_of(t),
@@ -68,8 +78,8 @@ def main():
             "status": t.get("status", ""),
             "registerStart": t.get("registerStart", ""),
             "registerEnd": t.get("registerEnd", ""),
-            "dateStart": t.get("dateStart", ""),
-            "dateEnd": t.get("dateEnd", ""),
+            "dateStart": date_start,
+            "dateEnd": date_end,
             "venue": t.get("venue", ""),
             "image": t.get("image", ""),
             "category": t.get("category"),

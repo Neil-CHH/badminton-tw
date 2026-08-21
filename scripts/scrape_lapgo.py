@@ -31,9 +31,9 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from scrape import base_group, derive_category, derive_standings, parse_group_tags
-from sources_common import (NON_BADMINTON, SRC_LAPGO, Http, city_from_text,
-                            find_csrf, loads_lenient, merge_standings,
-                            write_if_changed)
+from sources_common import (NON_BADMINTON, SRC_LAPGO, Http, blocked_openids,
+                            city_from_text, find_csrf, loads_lenient,
+                            merge_standings, write_if_changed)
 
 ROOT = Path(__file__).resolve().parent.parent
 TOURN_DIR = ROOT / "docs" / "data" / "tournaments"
@@ -453,12 +453,17 @@ def main():
     comps = api.competitions()
     print(f"LAPGO 羽球賽事:{len(comps)} 場")
 
-    new_count = updated = unchanged = skipped = 0
+    blocked = blocked_openids()
+    new_count = updated = unchanged = skipped = blocked_hits = 0
     for bucket, info in sorted(comps, key=lambda x: str(x[1].get("start_date") or "")):
         cid = info["id"]
         if only and str(cid) not in only:
             continue
         openid = f"lapgo-{cid}"
+        # 已判定與 mylivescore 重複並刪檔的賽事,不再抓也不再建檔(見 dedupe.py)
+        if openid in blocked:
+            blocked_hits += 1
+            continue
         existing = load_existing(openid)
         status = derive_status(info)
         need = (
@@ -491,7 +496,8 @@ def main():
             updated += 1
         print(f"  [{label}] {openid} {record['name'][:30]} ({detail})")
 
-    print(f"\nLAPGO 完成:新增 {new_count}、更新 {updated}、無變化 {unchanged}、略過 {skipped}")
+    print(f"\nLAPGO 完成:新增 {new_count}、更新 {updated}、無變化 {unchanged}、略過 {skipped}"
+          + (f"、重複已排除 {blocked_hits}" if blocked_hits else ""))
     if dry or "--no-index" in argv:
         return
     print("重建索引…")

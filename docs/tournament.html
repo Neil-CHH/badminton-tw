@@ -91,7 +91,7 @@ function render() {
     ${T.category ? `<span class="chip cat">${esc(T.category)}</span>` : ""}
     <span class="chip src">${esc(sourceLabel(T))}</span>
     <div class="kv" style="margin-top:10px">
-      <span class="k">比賽日期</span><span>${fmtRange(T.dateStart, T.dateEnd)}</span>
+      <span class="k">比賽日期</span><span>${fmtRange(...effectiveDates(T))}</span>
       <span class="k">報名期間</span><span>${fmtRange(T.registerStart, T.registerEnd)}</span>
       <span class="k">比賽地點</span><span>${esc(T.venue || "—")}</span>
     </div>
