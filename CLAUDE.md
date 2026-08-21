@@ -191,7 +191,11 @@ python -m http.server 8765 -d docs   # 本地預覽
 - 選手/單位索引已分片(2026-07):搜尋頁只載 search-index.json(~1.5MB),選手/單位頁依
   名稱雜湊載對應分片(最大單片 <1MB)。選手勝負統計(w/l)由 rebuild_index 預算進分片。
 - sw.js shell 快取為 stale-while-revalidate,改前端後不需手動升 VERSION;data 為
-  network-first + 3.5s timeout 退回快取。
+  network-first + 3.5s timeout 退回快取。**兩種策略的 fetch 都必須帶
+  `{ cache: "no-cache" }`**(2026-08 修):GitHub Pages 對所有檔案都回
+  `Cache-Control: max-age=600`,不指定的話 fetch 會直接吃瀏覽器的 HTTP 快取而不碰網路,
+  network-first 會退化成「更新後 10 分鐘內都還是舊資料」。實測帶 ETag 驗證回 304、
+  下載 0 bytes(完整下載是 199KB),所以幾乎不花流量。
 - 名次與比分為自動推導/抓取,about 頁已標注「以官方公告為準」。
 - 增量規則(2026-08 調整):scrape 抓回的內容若與現有檔案相同(除 lastUpdated)就不寫檔,
   故「更新 N」是真實變動數;「已結束但無比分」的賽事每月重試,但**名次已由 PDF 補齊者

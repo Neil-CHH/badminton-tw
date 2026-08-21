@@ -1,8 +1,13 @@
 /* 羽球賽事資料庫 Service Worker
    - App shell:stale-while-revalidate(先回快取秒開,背景抓新版,下次打開即更新;
      不再依賴手動升版本號)
-   - data/*.json:network-first,3.5 秒沒回應或離線即退回快取 */
-const VERSION = "v5";
+   - data/*.json:network-first,3.5 秒沒回應或離線即退回快取
+
+   兩種策略的 fetch 都要帶 { cache: "no-cache" }:GitHub Pages 對所有檔案都回
+   Cache-Control: max-age=600,不指定的話 fetch 會直接吃瀏覽器那份 10 分鐘的 HTTP 快取、
+   根本不碰網路 —— network-first 會退化成「10 分鐘內都是舊的」,背景更新也一樣被擋住。
+   no-cache 不是不快取,是「一定帶 ETag 去問伺服器」,沒變就回 304,幾乎不花流量。 */
+const VERSION = "v6";
 const SHELL_CACHE = `shell-${VERSION}`;
 const DATA_CACHE = `data-${VERSION}`;
 const SHELL = [
@@ -27,7 +32,7 @@ self.addEventListener("activate", e => {
 
 async function dataFetch(req) {
   const cache = await caches.open(DATA_CACHE);
-  const net = fetch(req).then(res => {
+  const net = fetch(req, { cache: "no-cache" }).then(res => {
     if (res.ok) cache.put(req, res.clone());
     return res;
   }).catch(() => null);
@@ -46,7 +51,7 @@ async function dataFetch(req) {
 async function shellFetch(req) {
   const cache = await caches.open(SHELL_CACHE);
   const hit = await cache.match(req);
-  const net = fetch(req).then(res => {
+  const net = fetch(req, { cache: "no-cache" }).then(res => {
     if (res.ok) cache.put(req, res.clone());
     return res;
   }).catch(() => null);
