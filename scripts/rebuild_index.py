@@ -13,7 +13,7 @@ import re
 import sys
 from pathlib import Path
 
-from sources_common import blocked_openids, effective_dates, source_of
+from sources_common import blocked_openids, effective_dates, norm_group_key, source_of
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "docs" / "data"
@@ -136,24 +136,41 @@ def main():
                         ent = add_player(nm, None, None)
                         ent["w" if winner == side else "l"] += 1
 
-        for s in t.get("standings", []):
+        # 獲獎去重:同一場賽事、同一組別,一位選手只登錄一筆名次(取最佳)。
+        # 兩種來源都會製造重複,而且只有這一層擋得住已寫進賽事檔的資料:
+        #   a) 同一列 members[] 內同名出現兩次 —— 團體賽名單列出多組配對時很常見
+        #      (254131 的 ["三井安/定平","聖紘/牡羊帥哥","三井安/牡羊帥哥"])
+        #   b) 同一組別有兩列都含這位選手 —— 主辦成績總表自己填錯(lapgo-100 一般男雙
+        #      同時有第 1、第 2 名),或籤表矛盾讓推導產生兩個名次
+        # standings 已由 merge_standings / derive_standings 依 (group, rank) 排序,
+        # 仍明確比較 rank 以免將來排序改變。
+        best_rank = {}      # (選手, 正規化組別) -> 已登錄的那一筆 rank ref
+        unit_seen = set()   # (單位, 正規化組別, 名次) -> 單位名次列去重(完全相同才算重複)
+        for s in sorted(t.get("standings", []),
+                        key=lambda r: (r.get("group") or "", r.get("rank") or 99)):
             # 雙打跨單位時 memberUnits 與 members 對齊,逐位歸屬正確單位;
             # 否則全部歸屬 s.unit(單打或同單位雙打)。
             members = s.get("members", [])
             munits = s.get("memberUnits") or []
+            gkey = norm_group_key(s.get("group", ""))
             all_members = []
             seen_units = []
             for i, nm in enumerate(members):
                 unit_i = munits[i] if i < len(munits) else s.get("unit", "")
                 for nm2 in split_members(nm):
-                    all_members.append(nm2)
+                    if nm2 not in all_members:
+                        all_members.append(nm2)
                     add_player(nm2, unit_i, s.get("group", ""))
                     add_unit(unit_i, nm2)
                     scored.add(nm2)
-                    ranks.setdefault(nm2, []).append({
-                        "openid": oid, "group": s.get("group", ""),
-                        "rank": s.get("rank"), "unit": unit_i,
-                    })
+                    prev = best_rank.get((nm2, gkey))
+                    if prev is None:
+                        ref = {"openid": oid, "group": s.get("group", ""),
+                               "rank": s.get("rank"), "unit": unit_i}
+                        best_rank[(nm2, gkey)] = ref
+                        ranks.setdefault(nm2, []).append(ref)
+                    elif (s.get("rank") or 99) < (prev["rank"] or 99):
+                        prev.update(group=s.get("group", ""), rank=s.get("rank"), unit=unit_i)
                 if unit_i and unit_i not in seen_units:
                     seen_units.append(unit_i)
             # 團體賽:只有單位、無個別選手 → 仍登錄該單位名次
@@ -161,6 +178,11 @@ def main():
                 add_unit(s["unit"], None)
                 seen_units.append(s["unit"])
             for unit in seen_units:
+                # 單位不可以 (單位, 組別) 去重 —— 同一所學校在同一組拿第 1 和第 2 是正常的
+                key = (unit, gkey, s.get("rank"))
+                if key in unit_seen:
+                    continue
+                unit_seen.add(key)
                 unit_ranks.setdefault(unit, []).append({
                     "openid": oid, "group": s.get("group", ""),
                     "rank": s.get("rank"), "members": all_members,

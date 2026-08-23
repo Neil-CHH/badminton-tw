@@ -2,6 +2,14 @@
   "_note": "自動偵測的跨來源重複賽事(見 scripts/dedupe.py)。shadow 檔已刪除,爬蟲會跳過不再抓取;需要復原時可由 git 歷史取回。",
   "pairs": [
     {
+      "canonical": "628963",
+      "shadow": "630550",
+      "name": "114年度菁英盃全國羽球錦標賽",
+      "shadowUrl": "",
+      "detected": "2026-08-23",
+      "note": "同來源重複,由獲獎內容比對判定;shadow 的 pdf 名次已併入 canonical"
+    },
+    {
       "canonical": "262259",
       "shadow": "lapgo-111",
       "name": "2026未來之星國際羽球錦標賽(台中站)",

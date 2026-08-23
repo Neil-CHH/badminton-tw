@@ -22,6 +22,7 @@
 (dominates):shadow 不能有任何 canonical 缺少的東西,否則只警告不動檔。
 """
 import json
+import re
 import sys
 from datetime import date
 from difflib import SequenceMatcher
@@ -29,15 +30,20 @@ from itertools import combinations
 from pathlib import Path
 
 from sources_common import (blocked_openids, best_standing_source, effective_dates,
-                            group_keys, load_duplicates, match_date_range,
-                            norm_tourn_name, save_duplicates, source_of, source_priority,
-                            year_tokens)
+                            group_keys, load_duplicates, match_date_range, merge_standings,
+                            norm_group_key, norm_tourn_name, save_duplicates, source_of,
+                            source_priority, year_tokens)
 
 ROOT = Path(__file__).resolve().parent.parent
 TOURN_DIR = ROOT / "docs" / "data" / "tournaments"
 
 NAME_RATIO = 0.90
 GROUP_JACCARD = 0.85
+# 「獲獎內容」比對的門檻(見 award_overlap_candidates)。實測 336 場全庫只命中 1 組,
+# 把門檻放寬到 0.15/4 仍然只有那 1 組,所以這兩個數字有很大的安全邊際。
+AWARD_OVERLAP = 0.15
+AWARD_MIN = 4
+_MEMBER_SPLIT = re.compile(r"[-/、,,]")
 # 斷路器:單次刪除上限。規則若因來源改版而退化,寧可整批中止也不要無聲掃掉整站。
 BREAKER_MIN = 3
 BREAKER_PCT = 0.03
@@ -54,7 +60,27 @@ def load_all():
         t["_groups"] = group_keys(t)
         t["_range"] = match_date_range(t) or _declared_range(t)
         t["_matches"] = len(t.get("matches") or [])
+        t["_awards"] = award_triples(t)
         out.append(t)
+    return out
+
+
+def award_triples(t):
+    """賽事的獲獎指紋:{(選手, 正規化組別, 名次)}。
+
+    賽名比對抓不到主辦把同一場賽事取兩個不同名字的情形(628963「114年度菁英盃全國羽球
+    錦標賽」與 630550「114年高雄市羽球社區聯誼賽第5站、第6站」相似度只有 0.40,
+    卻是同場館、同日期、組別是子集、22 組獲獎完全相同)。誰在哪一組拿第幾名是賽事的
+    實質內容,兩場不同的賽事不可能大量相同,所以拿它當指紋比賽名可靠得多。
+    """
+    out = set()
+    for s in t.get("standings") or []:
+        g = norm_group_key(s.get("group"))
+        for nm in s.get("members") or []:
+            for nm2 in _MEMBER_SPLIT.split(nm or ""):
+                nm2 = nm2.strip()
+                if nm2:
+                    out.add((nm2, g, s.get("rank")))
     return out
 
 
@@ -119,6 +145,34 @@ def detect(tours):
     return deletable, review
 
 
+def award_overlap_candidates(tours):
+    """以獲獎內容(而非賽名)找重複賽事,**同來源也看**。回傳 [(a, b, 交集數, 重疊率)]。
+
+    賽名比對有兩個結構性盲點:同來源一律跳過,而且主辦把同一場賽事取兩個完全不同的名字時
+    永遠配不上。這條線兩個都繞過去,只要求「實際比賽日期有交集」+「獲獎指紋大量重疊」。
+
+    只報告不自動刪:同來源的兩筆有可能是「同場館同週末辦的兩個賽事」,也可能是
+    shadow 帶著更權威的名次(630550 是 pdf、628963 是 derived),都需要人工判斷怎麼併。
+    """
+    out = []
+    known = blocked_openids()
+    for a, b in combinations(tours, 2):
+        if a["openid"] in known or b["openid"] in known:
+            continue
+        ra, rb = a["_range"], b["_range"]
+        if not ra or not rb or not (ra[0] <= rb[1] and rb[0] <= ra[1]):
+            continue
+        if not a["_awards"] or not b["_awards"]:
+            continue
+        inter = len(a["_awards"] & b["_awards"])
+        if inter < AWARD_MIN:
+            continue
+        ratio = inter / min(len(a["_awards"]), len(b["_awards"]))
+        if ratio >= AWARD_OVERLAP:
+            out.append((a, b, inter, ratio))
+    return sorted(out, key=lambda r: -r[3])
+
+
 def same_source_candidates(tours):
     """同來源內符合全部條件的近似賽事,只報告不處理(verify_data 用)。
 
@@ -135,13 +189,70 @@ def same_source_candidates(tours):
     return out
 
 
+def merge_and_drop(shadow_id, canonical_id, dry=False):
+    """把 shadow 的名次併進 canonical,再登錄+刪除 shadow。
+
+    給 award_overlap_candidates 找出來、但 shadow 帶著更權威名次的情形用
+    (628963 有 342 場比分但名次全是 derived,630550 沒有比分卻有 pdf 名次)。
+    直接刪 shadow 會掉資料,dominates() 也會擋下來,所以要先併再刪。
+    """
+    sp, cp = TOURN_DIR / f"{shadow_id}.json", TOURN_DIR / f"{canonical_id}.json"
+    if not sp.exists() or not cp.exists():
+        print(f"[錯誤] 找不到 {sp.name} 或 {cp.name}")
+        return 1
+    sh = json.loads(sp.read_text(encoding="utf-8"))
+    can = json.loads(cp.read_text(encoding="utf-8"))
+    merged = merge_standings(can.get("standings") or [], sh.get("standings") or [])
+    before = {s.get("source") for s in (can.get("standings") or [])}
+    after = {s.get("source") for s in merged}
+    print(f"{canonical_id} 名次 {len(can.get('standings') or [])} → {len(merged)} 筆"
+          f"(來源 {sorted(before)} → {sorted(after)}),併入 {shadow_id} 的 "
+          f"{len(sh.get('standings') or [])} 筆")
+    if dry:
+        print("(dry-run)未寫檔。")
+        return 0
+    can["standings"] = merged
+    cp.write_text(json.dumps(can, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    pairs = load_duplicates()
+    if shadow_id not in blocked_openids():
+        pairs.append({"canonical": canonical_id, "shadow": shadow_id,
+                      "name": can.get("name", ""), "shadowUrl": sh.get("sourceUrl") or "",
+                      "detected": date.today().isoformat(),
+                      "note": "同來源重複,由獲獎內容比對判定;shadow 的 pdf 名次已併入 canonical"})
+    save_duplicates(pairs)
+    sp.unlink(missing_ok=True)
+    print(f"已刪除 {sp.name} 並登錄至 duplicates.json。接著跑 rebuild_index.py。")
+    return 0
+
+
 def main():
     dry = "--dry-run" in sys.argv
+    if "--merge" in sys.argv:
+        i = sys.argv.index("--merge")
+        if len(sys.argv) < i + 3:
+            print("用法:python scripts/dedupe.py --merge <shadow openid> <canonical openid>")
+            return 1
+        return merge_and_drop(sys.argv[i + 1], sys.argv[i + 2], dry)
+
     tours = load_all()
     known = blocked_openids()
     deletable, review = detect(tours)
 
     print(f"掃描 {len(tours)} 場賽事,已登錄重複 {len(known)} 組")
+
+    aw = award_overlap_candidates(tours)
+    if aw:
+        print(f"\n== 獲獎內容高度重疊({len(aw)} 組,不會自動處理)==")
+        for a, b, inter, ratio in aw:
+            print(f"  {a['openid']}({a['_src']}) × {b['openid']}({b['_src']})  "
+                  f"相同獲獎 {inter} 筆/重疊 {ratio:.2f}")
+            print(f"      {a['name'][:38]}  {a['_range']}  比分 {a['_matches']}")
+            print(f"      {b['name'][:38]}  {b['_range']}  比分 {b['_matches']}")
+            # 建議留比分多的那份當 canonical(同來源時 source_priority 分不出高下)
+            can, sh = sorted((a, b), key=lambda t: (t["_matches"], source_priority(t)),
+                             reverse=True)
+            print(f"      → 確認是同一場後:python scripts/dedupe.py --merge "
+                  f"{sh['openid']} {can['openid']}")
 
     if review:
         print(f"\n== 需人工確認({len(review)} 組,不會自動刪除)==")

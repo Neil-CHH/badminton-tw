@@ -49,6 +49,19 @@
 3% 就整批中止。**支配性檢查不可用名次逐列比對** —— canonical 有 pdf 名次時兩邊逐列本來就
 不同(307030 的名次列 Jaccard 只有 0.78),那正是 canonical 較優的證據。
 
+**以獲獎內容比對(2026-08 補)**:上面那套只看賽名,有兩個結構性盲點 —— 同來源一律跳過、
+主辦把同一場賽事取兩個完全不同的名字時永遠配不上。`award_overlap_candidates()` 改看實質內容:
+日期區間有交集,且 `(選手, 正規化組別, 名次)` 三元組交集 ≥ 4 筆、÷ 較小一方 ≥ 0.15。
+**這條不看賽名也不看來源**,實測全庫只命中 1 組、零誤判(門檻放寬到 0.15/4 仍只有那 1 組):
+
+> `628963`「114年度菁英盃全國羽球錦標賽」(342 場比分、名次全 derived)與
+> `630550`「114年高雄市羽球社區聯誼賽第5站、第6站」(0 場比分、名次全 pdf)——
+> 同場館同日期、組別是子集、22 筆獲獎完全相同,但**賽名相似度只有 0.40**。
+
+命中**只報告不自動刪**(同來源有可能是同場館同週末的兩個賽事,要人工判斷)。shadow 帶著
+更權威名次時不能直接刪,用 `dedupe.py --merge <shadow> <canonical>` 先把名次
+`merge_standings` 進 canonical 再刪檔登錄。
+
 **正規化契約(最重要)**:`rebuild_index.py` 與 `docs/tournament.html` 都直接讀 mylivescore
 原始 match 形狀。新來源必須輸出同樣 14 個 key(全為字串):`groupName / match / date /
 time / teamA / teamB / matchtype / stadium / winner / Asidescore / Bsidescore / abstain /
@@ -153,6 +166,17 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
 - 名次推導(scrape.py derive_standings):R2 勝負=1/2 名、R34=3/4 名、F3/F4 依勝場數。
   官方規則是「依報名組數取 N 名」,決賽敗者不一定有名次 → **PDF 匯入的名次(source=pdf)
   永遠優先**,同組別覆蓋 derived。
+- **一組一隊只能有一個名次**(2026-08 修,原本會讓選手的獲獎數翻倍):
+  - 循環決賽的 `_entry_key` **團體賽只能以單位為鍵** —— `side_entry` 的 members 取自
+    「那一輪」的 scoreinfo,團體賽每輪先發不同,把 members 放進鍵裡會讓同一隊裂成好幾筆、
+    各拿一個名次(672515 的田中高中B 同時有第 2 與第 4 名)。個人賽反過來不能只用單位,
+    LAPGO 的 unit 常是空字串。
+  - **決賽兩隊之一又出現在三四名戰 → 整場 R34 略過**:來源籤表自相矛盾(619483、494323
+    的 R4 敗者跑去打決賽),硬給名次會讓同一隊同時是冠軍和季軍。寧可留空號讓 verify 報出來。
+  - `rebuild_index` 還有一道保險:同賽事、同正規化組別、同選手只留**最佳名次**。爬蟲修好
+    只對重抓後的資料生效,LAPGO 主辦成績總表自己填錯的(lapgo-100 一般男雙同時有第 1、
+    第 2 名)只有這層擋得住。同一列 `members[]` 內同名出現兩次(團體賽列出多組配對)也在
+    這裡去重。**單位名次不可以 `(單位, 組別)` 去重** —— 同校在同組拿第 1 和第 2 是正常的。
 - 手動匯入的歷史賽事 openid 格式:`manual-{YYYY}-{slug}`。
 
 ## 常用指令
@@ -169,8 +193,9 @@ python scripts/scrape_tsba.py --stage-results    # 備妥 tsba 成績圖與名�
 python scripts/tsba_reconcile.py --openid X --input raw.json [--apply]  # 名冊校對
 python scripts/fetch_docs.py      # 更新官方文件連結(增量,不下載;只對 mylivescore)
 python scripts/fetch_docs.py --relink   # 不打 API,只重新同步 regulation.pdf/resultPdf
-python scripts/dedupe.py --dry-run  # 看跨來源重複判定,不動檔
+python scripts/dedupe.py --dry-run  # 看重複判定(含獲獎內容比對),不動檔
 python scripts/dedupe.py          # 刪除重複賽事檔並登錄(update_all 已內含)
+python scripts/dedupe.py --merge 630550 628963   # 先併名次再刪 shadow(人工確認後才跑)
 python scripts/rebuild_index.py   # 重建索引(匯入後)
 python scripts/verify_data.py --summary  # 健檢+新增賽事摘要(部署前跑,exit 1 表示要修)
 python -m http.server 8765 -d docs   # 本地預覽
@@ -182,12 +207,21 @@ python -m http.server 8765 -d docs   # 本地預覽
 
 - Windows console 編碼:python 一律 `-X utf8`,stdout 需 reconfigure(腳本已內建)。
 - **跨語言契約有三個,改一邊就要改另一邊**:`rebuild_index.shard_of` ↔ `common.js shardOf`、
-  mylivescore 的 14 個 match key、`sources_common.effective_dates` ↔ `common.js effectiveDates`。
+  mylivescore 的 14 個 match key、`sources_common.effective_dates` ↔ `common.js effectiveDates`
+  (含 `DATE_OVERRIDES` 那張表)。
 - 賽事日期(2026-08):少數賽事的 `dateStart` 是錯的(整串複製到別場、日期反轉、
   `0000-00-00`),會讓列表排序與年份篩選錯位。`effective_dates` 只在**與實際比分日期完全
   沒有交集時**才改用 `matches[].date` 推得的區間(目前 5 場),「公告 2/28 起、實際 3/1
   開打」這種正常落差一律保留原值。**賽事 JSON 本體不改寫**(保持來源忠實,也避免爬蟲每月
   覆寫→rebuild 再補寫的 git 噪音),所以直接讀賽事檔的 tournament.html 必須自己套同一條規則。
+  沒有比分可以回推的錯誤日期只能明列在 `DATE_OVERRIDES`(目前 1 場:531555「114年全中運
+  資格賽」標成 2026 年,害它排在「115年…資格賽」前 6 天、看起來像同一場收了兩次)。
+  **不可用「賽名年份 vs dateStart 年份」的通則** —— 4 筆不一致裡有 3 筆(342339、507058、
+  648140)是「賽事叫 2026 年但前一年 12 月就開打」的正常情形。
+- **一場賽事在多個組別得名不是重複**:單打+雙打、個人+團體本來就是不同獎項(廖宥睿在
+  746611 拿男雙冠軍、單打團體亞軍、雙打團體亞軍,官方規程確認是三個獨立報名的項目)。
+  但 player.html 的 🏆 成績總覽每列都印賽名,同一個賽名連著出現好幾次很容易被當成資料重複,
+  所以賽事欄用 `rowspan` 併成一格,標題也寫成「N 個獎項・M 場賽事」。
 - 選手/單位索引已分片(2026-07):搜尋頁只載 search-index.json(~1.5MB),選手/單位頁依
   名稱雜湊載對應分片(最大單片 <1MB)。選手勝負統計(w/l)由 rebuild_index 預算進分片。
 - sw.js shell 快取為 stale-while-revalidate,改前端後不需手動升 VERSION;data 為

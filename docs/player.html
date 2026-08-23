@@ -126,17 +126,28 @@ async function init() {
     return parts.length ? `<div class="note" style="margin-top:-6px">${parts.join("")}</div>` : "";
   })()}`;
   if (ranks.length) {
-    const sorted = [...ranks].sort((a, b) =>
-      ((tmap[b.openid]?.dateStart) || "").localeCompare((tmap[a.openid]?.dateStart) || "") || a.rank - b.rank);
-    html += `<h2 class="sec">🏆 成績總覽 <small>(${ranks.length})</small></h2>
+    // 一場賽事可能在多個組別都得名(單打+雙打、個人+團體),那是不同的獎項而非重複。
+    // 每列都印賽名會讓同一個賽名連著出現好幾次、看起來像資料重複,所以把賽名欄
+    // 用 rowspan 併成一格,一場賽事只出現一次。
+    const byTourn = new Map();
+    ranks.forEach(r => {
+      if (!byTourn.has(r.openid)) byTourn.set(r.openid, []);
+      byTourn.get(r.openid).push(r);
+    });
+    const groups = [...byTourn.entries()].sort((a, b) =>
+      ((tmap[b[0]]?.dateStart) || "").localeCompare((tmap[a[0]]?.dateStart) || ""));
+    html += `<h2 class="sec">🏆 成績總覽
+      <small>(${ranks.length} 個獎項・${groups.length} 場賽事)</small></h2>
       <div class="card"><table class="plain">
       <tr><th>名次</th><th>組別</th><th>賽事</th></tr>` +
-      sorted.map(r => {
-        const t = tmap[r.openid];
-        return `<tr><td class="${rankClass(r.rank)}">${esc(rankLabel(r.rank))}</td>
+      groups.map(([oid, rs]) => {
+        const t = tmap[oid];
+        const sorted = [...rs].sort((a, b) => a.rank - b.rank);
+        return sorted.map((r, i) => `<tr><td class="${rankClass(r.rank)}">${esc(rankLabel(r.rank))}</td>
           <td>${esc(r.group)}<div style="font-size:12px;color:var(--text-2)">${esc(r.unit || "")}</div></td>
-          <td>${t ? tournLink(r.openid, t.name) : esc(r.openid)}
-            <div style="font-size:12px;color:var(--text-2)">${t ? fmtDate(t.dateStart) : ""}</div></td></tr>`;
+          ${i ? "" : `<td rowspan="${sorted.length}">${t ? tournLink(oid, t.name) : esc(oid)}
+            <div style="font-size:12px;color:var(--text-2)">${t ? fmtDate(t.dateStart) : ""}${
+              sorted.length > 1 ? `・${sorted.length} 個獎項` : ""}</div></td>`}</tr>`).join("");
       }).join("") + `</table></div>`;
   }
 

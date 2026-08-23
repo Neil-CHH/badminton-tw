@@ -190,8 +190,18 @@ def check_duplicates(tours):
     for a, b, ratio, _gj in dedupe.same_source_candidates(loaded):
         warn(f"同來源疑似重複:{a['openid']} 與 {b['openid']}(相似度 {ratio:.2f})"
              f"「{a['name'][:24]}」→ 同來源一律不自動處理,請人工確認")
-    if not deletable and not review:
-        print(f"[OK] 跨來源去重:已登錄 {len(pairs)} 組,無新的重複候選")
+    # 賽名比對的兩個盲點(同來源不看、主辦取兩個不同名字)都由獲獎內容補上。
+    # 這條命中就代表有選手的場次與獲獎被算了兩次,列為錯誤。
+    aw = dedupe.award_overlap_candidates(loaded)
+    for a, b, inter, ratio in aw:
+        can, sh = sorted((a, b), key=lambda t: (t["_matches"], sources_common.source_priority(t)),
+                         reverse=True)
+        err(f"{a['openid']} 與 {b['openid']} 有 {inter} 筆完全相同的獲獎"
+            f"(選手/組別/名次,重疊 {ratio:.2f})、比賽日期也重疊 → 極可能是同一場賽事收了兩次"
+            f"「{a['name'][:20]}」/「{b['name'][:20]}」;確認後跑 "
+            f"python scripts/dedupe.py --merge {sh['openid']} {can['openid']}")
+    if not deletable and not review and not aw:
+        print(f"[OK] 去重:已登錄 {len(pairs)} 組,賽名與獲獎內容都沒有新的重複候選")
 
 
 # 官方公布的名次(PDF/主辦平台總表)本來就會並列與跳號(依報名組數取 N 名,
@@ -229,6 +239,35 @@ def check_standings(tours):
         print("[OK] derived / ocr 名次:無重複或跳號")
     elif ocr_bad:
         print(f"[提醒] 其中 {ocr_bad} 個組別來自圖片解析(ocr),建議對照原圖抽查")
+
+
+def check_duplicate_awards(tours):
+    """同一場賽事、同一組別,同一位選手拿到兩個名次 → 該選手的獲獎數會被算兩次。
+
+    rebuild_index 建索引時已去重(只留最佳名次),所以前端數字是對的;但賽事頁
+    tournament.html 直接讀賽事檔,還是會把兩列都畫出來,所以仍要報出來讓人回頭補 PDF。
+    """
+    bad = 0
+    for oid, t in sorted(tours.items()):
+        per = {}
+        for s in t.get("standings", []):
+            g = sources_common.norm_group_key(s.get("group"))
+            for nm in s.get("members") or []:
+                for nm2 in rebuild_index.split_members(nm):
+                    per.setdefault((nm2, g), []).append(s.get("rank"))
+        for (nm2, g), rks in sorted(per.items()):
+            # 同一個名次出現兩次是正常的:團體賽的名單會把同一位選手的多組配對都列出來
+            # (254131 的「三井安/定平」與「三井安/牡羊帥哥」都在冠軍那一列)。
+            # 真正該報的是**名次不同**——那代表名次表自相矛盾。
+            if len(set(rks)) > 1:
+                bad += 1
+                if bad <= 12:
+                    warn(f"{oid} 「{g}」的 {nm2} 同時有第 {sorted(r for r in rks if r)} 名 —— "
+                         f"索引只取最佳名次,但賽事檔的名次表自相矛盾,建議匯入官方成績 PDF")
+    if bad > 12:
+        warn(f"(同組別名次矛盾還有 {bad - 12} 筆未列出)")
+    if not bad:
+        print("[OK] 名次去重:沒有同組別、同選手拿到兩個不同名次的情形")
 
 
 def report_entries(tours):
@@ -315,6 +354,7 @@ def main():
     check_mojibake(tours)
     check_dates(tours)
     check_duplicates(tours)
+    check_duplicate_awards(tours)
     check_standings(tours)
 
     if errors:

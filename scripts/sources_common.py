@@ -63,9 +63,15 @@ def standings_rank(source):
 
 
 def _by_group(rows):
+    """以「正規化後的組名」分桶。
+
+    不能用原始字串:同一組在兩份資料裡的寫法常有差(「Level 3-4 級男雙」vs
+    「Level 3-4級男雙」),分成兩桶就會兩邊的名次都留下來 → 選手獲獎被算兩次。
+    正規化只用於分桶,輸出仍保留各筆原始的 group 字串。
+    """
     d = {}
     for s in rows or []:
-        d.setdefault(s.get("group", ""), []).append(s)
+        d.setdefault(norm_group_key(s.get("group", "")), []).append(s)
     return d
 
 
@@ -101,6 +107,16 @@ def merge_standings(existing, incoming):
 
 BAD_DATES = {"", "0000-00-00", None}
 
+# 來源日期錯得離譜、且沒有比分可以回推的賽事,明列覆寫(openid → (start, end))。
+# 刻意不用「賽名年份 vs dateStart 年份」的通則:實測 4 筆不一致裡有 3 筆
+# (342339、507058、648140)是「賽事叫 2026 年但前一年 12 月就先開打」的正常情形。
+# docs/js/common.js 的 DATE_OVERRIDES 是同一份表,兩邊必須同步。
+DATE_OVERRIDES = {
+    # 114 年全中運資格賽標成 2026-03-02,實際是 2025 年(自家總成績紀錄 PDF 日期 2025-03-09)。
+    # 錯誤年份會讓它排在「115年…資格賽」前 6 天,看起來像同一場賽事收了兩次。
+    "531555": ("2025-03-02", "2025-03-09"),
+}
+
 
 def match_date_range(t):
     """由 matches[].date 取實際比賽日期區間;沒有比分回 None。"""
@@ -118,6 +134,9 @@ def effective_dates(t):
 
     docs/js/common.js 的 effectiveDates() 是同一條規則的 JS 版,兩邊必須同步修改。
     """
+    over = DATE_OVERRIDES.get(str(t.get("openid", "")))
+    if over:
+        return over
     ds = t.get("dateStart")
     de = t.get("dateEnd") or ds
     real = match_date_range(t)

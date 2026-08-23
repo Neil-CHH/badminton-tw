@@ -184,8 +184,29 @@ def side_entry(match, side):
     return {"unit": unit, "members": uniq}
 
 
-def _entry_key(e):
-    return e["unit"] + "|" + "/".join(e["members"])
+def _entry_key(e, is_team=False):
+    """名次表裡「同一個參賽單元」的識別鍵。
+
+    團體賽**只能以單位為鍵**:side_entry 的 members 取自「那一輪」的 scoreinfo,
+    而團體賽每輪先發名單不同,把 members 放進鍵裡會讓同一支隊伍裂成好幾筆,
+    循環決賽於是發給同一隊好幾個名次(672515 的合庫飛樂豐原A 同時有第 2 與第 4 名)。
+    個人賽反過來不能只用單位 —— LAPGO 的 unit 常是空字串,只用 unit 會把不同對子併掉。
+    """
+    return e["unit"] if is_team else e["unit"] + "|" + "/".join(e["members"])
+
+
+def _collapse(rows, is_team):
+    """同一組別內,同一個參賽單元只留最佳(數字最小)名次。
+
+    來源的籤表本身就可能矛盾:619483 國小高年級組女雙的科園國小輸掉 R2 決賽(→第 2 名)
+    卻又打了 R34 並獲勝(→第 3 名),兩筆都留會讓該選手的獲獎數被算兩次。
+    """
+    best = {}
+    for s in rows:
+        k = _entry_key(s, is_team)
+        if k not in best or s["rank"] < best[k]["rank"]:
+            best[k] = s
+    return sorted(best.values(), key=lambda s: s["rank"])
 
 
 def derive_standings(matches):
@@ -199,6 +220,8 @@ def derive_standings(matches):
     for gname, ms in groups.items():
         if not gname:
             continue
+        is_team = any(m.get("HeadGroup") == "團體" for m in ms)
+        rows = []
         mt = lambda m: (m.get("matchtype") or "").strip()  # noqa: E731
         finals = [m for m in ms if mt(m) in ("R2", "F2") and m.get("winner") in ("A", "B")]
         thirds = [m for m in ms if mt(m) == "R34" and m.get("winner") in ("A", "B")]
@@ -210,18 +233,23 @@ def derive_standings(matches):
             for rank, side in ((1, win), (2, lose)):
                 e = side_entry(f, side)
                 if e["unit"] or e["members"]:
-                    standings.append({"group": gname, "rank": rank,
-                                      "unit": e["unit"], "members": e["members"],
-                                      "source": "derived"})
+                    rows.append({"group": gname, "rank": rank,
+                                 "unit": e["unit"], "members": e["members"],
+                                 "source": "derived"})
             if len(thirds) == 1:
                 t = thirds[0]
                 win3, lose3 = ("A", "B") if t["winner"] == "A" else ("B", "A")
-                for rank, side in ((3, win3), (4, lose3)):
-                    e = side_entry(t, side)
-                    if e["unit"] or e["members"]:
-                        standings.append({"group": gname, "rank": rank,
-                                          "unit": e["unit"], "members": e["members"],
-                                          "source": "derived"})
+                third_entries = [(rank, side_entry(t, side)) for rank, side in
+                                 ((3, win3), (4, lose3))]
+                # 決賽的兩隊之一又出現在三四名戰 → 來源的籤表自相矛盾(619483、494323),
+                # 這場就不是真的三四名戰,兩個名次都不可信,整場略過而不是硬給名次。
+                final_keys = {_entry_key(side_entry(f, s), is_team) for s in ("A", "B")}
+                if not any(_entry_key(e, is_team) in final_keys for _, e in third_entries):
+                    for rank, e in third_entries:
+                        if e["unit"] or e["members"]:
+                            rows.append({"group": gname, "rank": rank,
+                                         "unit": e["unit"], "members": e["members"],
+                                         "source": "derived"})
         elif rrobin and all(m.get("winner") in ("A", "B") for m in rrobin):
             # 循環決賽:依勝場數排名(同勝場以總得失分差排序)
             stats = {}
@@ -230,8 +258,12 @@ def derive_standings(matches):
                     e = side_entry(m, side)
                     if not (e["unit"] or e["members"]):
                         continue
-                    k = _entry_key(e)
+                    k = _entry_key(e, is_team)
                     st = stats.setdefault(k, {"entry": e, "wins": 0, "diff": 0})
+                    # 團體賽各輪先發不同,名單取各輪聯集(保持出現順序)
+                    for nm in e["members"]:
+                        if nm not in st["entry"]["members"]:
+                            st["entry"]["members"].append(nm)
                     try:
                         own = int(m.get(f"{side}sidescore") or 0)
                         opp = int(m.get("Bsidescore" if side == "A" else "Asidescore") or 0)
@@ -242,10 +274,11 @@ def derive_standings(matches):
                         st["wins"] += 1
             ranked = sorted(stats.values(), key=lambda s: (-s["wins"], -s["diff"]))
             for rank, st in enumerate(ranked, start=1):
-                standings.append({"group": gname, "rank": rank,
-                                  "unit": st["entry"]["unit"],
-                                  "members": st["entry"]["members"],
-                                  "source": "derived"})
+                rows.append({"group": gname, "rank": rank,
+                             "unit": st["entry"]["unit"],
+                             "members": st["entry"]["members"],
+                             "source": "derived"})
+        standings.extend(_collapse(rows, is_team))
     standings.sort(key=lambda s: (s["group"], s["rank"]))
     return standings
 

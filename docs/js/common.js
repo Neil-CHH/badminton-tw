@@ -33,11 +33,18 @@ function fmtRange(a, b) {
    否則列表頁與詳情頁的日期會不一致。
    與 scripts/sources_common.py 的 effective_dates() 必須完全一致。 */
 const BAD_DATES = new Set(["", "0000-00-00"]);
+/* 來源日期錯得離譜、又沒有比分可以回推的賽事,明列覆寫。
+   與 sources_common.py 的 DATE_OVERRIDES 是同一份表。 */
+const DATE_OVERRIDES = {
+  "531555": ["2025-03-02", "2025-03-09"],  // 114 年全中運資格賽誤標為 2026 年
+};
 function matchDateRange(t) {
   const ds = [...new Set((t.matches || []).map(m => m.date).filter(d => d && !BAD_DATES.has(d)))].sort();
   return ds.length ? [ds[0], ds[ds.length - 1]] : null;
 }
 function effectiveDates(t) {
+  const over = DATE_OVERRIDES[String(t.openid)];
+  if (over) return over;
   const ds = t.dateStart, de = t.dateEnd || ds;
   const real = matchDateRange(t);
   const clean = v => (!v || BAD_DATES.has(v)) ? "" : v;
