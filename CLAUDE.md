@@ -89,6 +89,10 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
 - `scripts/tsba_reconcile.py` — 成績圖解析結果 × 名冊校對 → `source:"ocr"` 的 standings
 - `scripts/dedupe.py` — 跨來源重複賽事偵測與刪檔(重建索引前跑);
   登錄檔 `scripts/duplicates.json` 同時是爬蟲的阻擋清單
+- `scripts/parse_result_pdf.py` — **官方總成績紀錄 PDF → standings(source=pdf)**,
+  自動解析成績總表(mylivescore 的 PDF 是可抽文字的向量表格,不必視覺判讀)
+- `scripts/rederive_standings.py` — 用現有比分重跑 derive_standings(改過推導規則後跑)
+- `scripts/pdf_backfill_list.py` — 列出「有官方 PDF 但名次仍非 pdf」的待補清單
 - `scripts/rebuild_index.py` — 由 tournaments/*.json 重建索引與分片(匯入後必跑)
 - `scripts/verify_data.py` — 資料健檢(連結一致性/索引新鮮度/分片落點/亂碼/缺口),只讀不寫
 - `inbox/` — 待匯入 PDF 與 tsba 待解析素材暫放(整個目錄 gitignore)
@@ -169,6 +173,10 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
   組別與名次不受影響(名次來自官方成績總表)。略過時會印 `[略過] … 非賽制場次 N 場`,
   這樣「整場都是友誼賽 → 0 場比賽」才不會被誤判成 API 抓取失敗。
 - 名次推導(scrape.py derive_standings):R2 勝負=1/2 名、R34=3/4 名、F3/F4 依勝場數。
+  **一組同時有 R2 與 F2/F3/F4 = 主籤 + 5~8 名安慰賽,不是循環決賽**(2026-08 修,實測 52 組
+  中招):舊寫法把 R2 和 F2 混成 finals 而落進循環賽分支,結果 1~4 名全發給安慰賽選手、
+  真正的冠軍一個名次都沒有(277843 國小中年級女生組單打:決賽高紫芸勝,derived 卻給了
+  安慰賽冠軍賴品喬)。有 R2 就以 R2 為決賽,F 系列整組忽略。
   官方規則是「依報名組數取 N 名」,決賽敗者不一定有名次 → **PDF 匯入的名次(source=pdf)
   永遠優先**,同組別覆蓋 derived。
 - **一組一隊只能有一個名次**(2026-08 修,原本會讓選手的獲獎數翻倍):
@@ -183,6 +191,13 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
     第 2 名)只有這層擋得住。同一列 `members[]` 內同名出現兩次(團體賽列出多組配對)也在
     這裡去重。**單位名次不可以 `(單位, 組別)` 去重** —— 同校在同組拿第 1 和第 2 是正常的。
 - 手動匯入的歷史賽事 openid 格式:`manual-{YYYY}-{slug}`。
+- **「取 N 名」只存在於官方文件,推導永遠猜不到**(2026-08 實測):同一場賽事裡各組取的
+  名次數不一樣 —— 257164 新羽盃 11 組中,取 1 名 2 組、取 2 名 4 組、取 4 名(1/2/並列 3)
+  5 組,而籤表形狀完全一樣。全庫對照官方名次也證實:同樣有八強籤的組別,官方取到第 3 名
+  的 85 組、取到第 5 名的 59 組,五五波。→ **有總成績 PDF 就一律以 PDF 為準**,
+  沒有的才退回推導,清單用 `pdf_backfill_list.py` 追蹤。
+- **並列名次是主流**:官方資料裡 191 組 official + 62 組 pdf 是 `[1,2,3,3]`(兩個並列
+  第三、沒有殿軍),`[1,2,3,3,5,5,5,5]` 也很常見。同組同名次出現多筆是正常的。
 
 ## 常用指令
 
@@ -201,6 +216,10 @@ python scripts/fetch_docs.py --relink   # 不打 API,只重新同步 regulation.
 python scripts/dedupe.py --dry-run  # 看重複判定(含獲獎內容比對),不動檔
 python scripts/dedupe.py          # 刪除重複賽事檔並登錄(update_all 已內含)
 python scripts/dedupe.py --merge 630550 628963   # 先併名次再刪 shadow(人工確認後才跑)
+python scripts/parse_result_pdf.py --openid X          # 解析官方總成績 PDF(只看報告)
+python scripts/parse_result_pdf.py --all --apply       # 全庫套用(--force 連已是 pdf 的也重跑)
+python scripts/pdf_backfill_list.py                    # 待補 PDF 清單
+python scripts/rederive_standings.py --apply           # 改過推導規則後重推(不連網)
 python scripts/rebuild_index.py   # 重建索引(匯入後)
 python scripts/verify_data.py --summary  # 健檢+新增賽事摘要(部署前跑,exit 1 表示要修)
 python -m http.server 8765 -d docs   # 本地預覽

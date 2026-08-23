@@ -223,9 +223,18 @@ def derive_standings(matches):
         is_team = any(m.get("HeadGroup") == "團體" for m in ms)
         rows = []
         mt = lambda m: (m.get("matchtype") or "").strip()  # noqa: E731
-        finals = [m for m in ms if mt(m) in ("R2", "F2") and m.get("winner") in ("A", "B")]
+        r2 = [m for m in ms if mt(m) == "R2" and m.get("winner") in ("A", "B")]
+        f2 = [m for m in ms if mt(m) == "F2" and m.get("winner") in ("A", "B")]
         thirds = [m for m in ms if mt(m) == "R34" and m.get("winner") in ("A", "B")]
         rrobin = [m for m in ms if mt(m) in ("F3", "F4")]
+        # 一組同時有 R2 主籤與 F2/F3/F4 = 主籤 + 5~8 名安慰賽,不是循環決賽。
+        # 舊寫法把 R2 和 F2 混成 finals(變成兩場決賽)而落進循環賽分支,結果把
+        # 1~4 名全發給安慰賽選手、真正的冠軍一個名次都沒有(277843 國小中年級女生
+        # 組單打:決賽高紫芸勝,derived 卻給了安慰賽冠軍賴品喬)。實測 52 組中招。
+        if r2:
+            finals, rrobin = r2, []
+        else:
+            finals = f2
 
         if len(finals) == 1:
             f = finals[0]
