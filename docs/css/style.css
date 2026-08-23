@@ -186,6 +186,8 @@ h2.sec small { color: var(--text-2); font-weight: 400; }
 table.plain { width: 100%; border-collapse: collapse; font-size: 14px; }
 table.plain th, table.plain td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; }
 table.plain th { color: var(--text-2); font-weight: 600; font-size: 13px; background: var(--th-bg); }
+/* 成績總覽把同一場賽事的多個獎項用 rowspan 併成一格,賽名靠上對齊才對得到第一個獎項 */
+table.plain td[rowspan] { vertical-align: top; }
 .rank-1 { color: var(--gold); font-weight: 800; }
 .rank-2 { color: #8a8f98; font-weight: 800; }
 .rank-3 { color: #b06b34; font-weight: 800; }
