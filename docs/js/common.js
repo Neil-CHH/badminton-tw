@@ -102,6 +102,11 @@ function shardOf(name, n = 16) {
 function loadPlayerShard(name) { return loadJSON(`players/${shardOf(name)}.json`); }
 function loadUnitShard(name) { return loadJSON(`units/${shardOf(name)}.json`); }
 
+/* 輕量搜尋索引拆成兩檔:單位頁只需要 units 那半(gzip 171KB),
+   不必連 players 那半(gzip 669KB)一起載。搜尋頁兩檔都要,並行載入總量不變。 */
+function loadSearchPlayers() { return loadJSON("search-index-players.json"); }
+function loadSearchUnits() { return loadJSON("search-index-units.json"); }
+
 /* ---------- 單位名稱的縣市前綴(用於判斷同名不同校) ---------- */
 const COUNTY_PREFIXES = [
   ["臺北市", "北市"], ["台北市", "北市"], ["北市", "北市"],

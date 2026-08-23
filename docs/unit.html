@@ -146,8 +146,9 @@ async function init() {
   renderNav("search");
   document.getElementById("title").textContent = `🏫 ${name}`;
   document.title = `${name} - 羽球賽事資料庫`;
-  const [si, _tmap] = await Promise.all([loadJSON("search-index.json"), tournMap()]);
-  unitIdx = si.units; tmap = _tmap;
+  // variantsOf() 要掃過全部單位名找變體,所以整份 units 索引都要;players 那半用不到。
+  const [units, _tmap] = await Promise.all([loadSearchUnits(), tournMap()]);
+  unitIdx = units; tmap = _tmap;
   if (!unitIdx[name]) {
     document.getElementById("out").innerHTML = `<div class="empty">查無單位「${esc(name)}」</div>`;
     const vs = variantsOf(name);

@@ -7,7 +7,10 @@
    Cache-Control: max-age=600,不指定的話 fetch 會直接吃瀏覽器那份 10 分鐘的 HTTP 快取、
    根本不碰網路 —— network-first 會退化成「10 分鐘內都是舊的」,背景更新也一樣被擋住。
    no-cache 不是不快取,是「一定帶 ETag 去問伺服器」,沒變就回 304,幾乎不花流量。 */
-const VERSION = "v6";
+/* v7:search-index.json 拆成 search-index-players/units 兩檔並刪除舊檔。
+   shell 平常是 stale-while-revalidate、不必手動升版,但這次「舊 HTML 會去要
+   一個已經不存在的資料檔」,升版強制換掉 shell 與 data 快取才不會卡在 404。 */
+const VERSION = "v7";
 const SHELL_CACHE = `shell-${VERSION}`;
 const DATA_CACHE = `data-${VERSION}`;
 const SHELL = [

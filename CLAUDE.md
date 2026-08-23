@@ -72,7 +72,8 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
 
 - `docs/` — PWA(GitHub Pages 站台根目錄;vanilla JS、無 build step、繁中)
   - 頁面:index(賽事列表)、search(選手+單位搜尋)、unit、player、tournament、about
-  - `data/index.json` 賽事摘要|`data/search-index.json` 輕量搜尋索引(搜尋頁唯一載入)
+  - `data/index.json` 賽事摘要|`data/search-index-players.json` +
+    `data/search-index-units.json` 輕量搜尋索引(搜尋頁載兩檔、單位頁只載 units 那檔)
   - `data/players/{0-15}.json`、`data/units/{0-15}.json` 選手/單位分片(名稱雜湊分 16 片;
     Python `rebuild_index.shard_of` 與 JS `common.js shardOf` 演算法必須一致)
   - `data/tournaments/{openid}.json` 單場賽事完整資料(含逐場比分與官方文件連結)
@@ -226,9 +227,23 @@ python -m http.server 8765 -d docs   # 本地預覽
   746611 拿男雙冠軍、單打團體亞軍、雙打團體亞軍,官方規程確認是三個獨立報名的項目)。
   但 player.html 的 🏆 成績總覽每列都印賽名,同一個賽名連著出現好幾次很容易被當成資料重複,
   所以賽事欄用 `rowspan` 併成一格,標題也寫成「N 個獎項・M 場賽事」。
-- 選手/單位索引已分片(2026-07):搜尋頁只載 search-index.json(~1.5MB),選手/單位頁依
-  名稱雜湊載對應分片(最大單片 <1MB)。選手勝負統計(w/l)由 rebuild_index 預算進分片。
-- sw.js shell 快取為 stale-while-revalidate,改前端後不需手動升 VERSION;data 為
+- **檔案大小一律看 gzip,不要看磁碟上的 raw** —— GitHub Pages 對 .json 有 gzip,
+  實際傳輸約是 raw 的 1/3(search-index-players 2043KB→669KB、players 分片 1198KB→196KB)。
+  `rebuild_index` 印的是 raw,拿它評估使用者流量會高估三倍。
+- 選手/單位索引已分片(2026-07):選手/單位頁依名稱雜湊載對應分片(16 片,gzip 最大
+  players 196KB / units 85KB)。選手勝負統計(w/l)由 rebuild_index 預算進分片。
+- **搜尋索引拆成 players / units 兩檔(2026-08)**:`unit.html` 的 `variantsOf()` 要掃過
+  全部單位名找變體(「崑山國小」vs「南市崑山國小」),所以整份 units 索引都要,但
+  **players 那半用不到** —— 合成一檔時單位頁得白載 669KB。拆檔後單位頁首載
+  960KB→274KB(gzip);搜尋頁兩檔並行載入,總量不變。
+  各頁面實際載入(gzip):index 18KB、選手頁 ~215KB、搜尋頁 ~840KB、單位頁 ~274KB。
+- 成長速度(2026-08 量測):例行更新讓 search-index 每月增約 40KB raw;
+  2026-08-16 從 1734→2415KB 那一跳是加 tsba 來源與 `entries[]` 的一次性結構增量,不是失控。
+  下一個要動的門檻是分片數 16→32(選手頁 196→100KB),但那要同步改
+  `rebuild_index.shard_of` 與 `common.js shardOf`,選手數再翻倍時再說。
+- sw.js shell 快取為 stale-while-revalidate,改前端後不需手動升 VERSION —— **例外是
+  「刪掉或改名資料檔」**(如 2026-08 拆 search-index):舊 HTML 還在 shell 快取裡,會去要
+  一個已 404 的檔,要升 VERSION 強制換掉 shell+data 快取(代價是全體重載一次)。data 為
   network-first + 3.5s timeout 退回快取。**兩種策略的 fetch 都必須帶
   `{ cache: "no-cache" }`**(2026-08 修):GitHub Pages 對所有檔案都回
   `Cache-Control: max-age=600`,不指定的話 fetch 會直接吃瀏覽器的 HTTP 快取而不碰網路,

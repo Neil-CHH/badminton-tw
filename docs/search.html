@@ -25,7 +25,10 @@ let idxDB = null, loadingP = null;
 const MAXSHOW = 60;
 
 function ensureData() {
-  if (!loadingP) loadingP = loadJSON("search-index.json").then(d => { idxDB = d; });
+  if (!loadingP) {
+    loadingP = Promise.all([loadSearchPlayers(), loadSearchUnits()])
+      .then(([players, units]) => { idxDB = { players, units }; });
+  }
   return loadingP;
 }
 

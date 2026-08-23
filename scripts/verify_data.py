@@ -86,13 +86,26 @@ def check_index(tours):
             "跑 python scripts/rebuild_index.py")
 
 
+SEARCH_INDEX = {"players": "search-index-players.json", "units": "search-index-units.json"}
+
+
+def load_search_index():
+    """兩個搜尋索引檔 → {kind: {name: [...]}};缺檔回 None(呼叫端各自報錯)。"""
+    out = {}
+    for kind, fname in SEARCH_INDEX.items():
+        p = DATA_DIR / fname
+        if not p.exists():
+            return None
+        out[kind] = load(p)
+    return out
+
+
 def check_shards():
     """分片落點、search-index 與分片的 key 集合是否一致。"""
-    si_path = DATA_DIR / "search-index.json"
-    if not si_path.exists():
-        err("search-index.json 不存在 → 跑 python scripts/rebuild_index.py")
+    si = load_search_index()
+    if si is None:
+        err(f"{' / '.join(SEARCH_INDEX.values())} 不齊 → 跑 python scripts/rebuild_index.py")
         return
-    si = load(si_path)
 
     for kind, si_key in (("players", "players"), ("units", "units")):
         names = set()
@@ -131,9 +144,8 @@ def check_mojibake(tours):
         for field in ("name", "venue"):
             if "�" in (t.get(field) or ""):
                 hits.append(f"{oid} {field}={t.get(field)[:40]}")
-    si_path = DATA_DIR / "search-index.json"
-    if si_path.exists():
-        si = load(si_path)
+    si = load_search_index()
+    if si is not None:
         for kind in ("players", "units"):
             for name in si.get(kind, {}):
                 if "�" in name:

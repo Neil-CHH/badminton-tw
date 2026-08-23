@@ -2,7 +2,9 @@
 """掃 docs/data/tournaments/*.json,重建前端索引:
 
 - index.json          賽事摘要(列表頁)
-- search-index.json   輕量搜尋索引(選手/單位名稱 → 摘要數字,搜尋頁唯一需要載的檔)
+- search-index-players.json / search-index-units.json  輕量搜尋索引
+  (名稱 → 摘要數字。拆兩檔是因為 unit.html 只需要 units 那半 —— 合成一檔時
+   單位頁得白載 669KB 的 players;搜尋頁兩檔都要,並行載入總量不變)
 - players/{0..15}.json 選手分片:姓名 → 參賽紀錄(含勝負統計)與名次
 - units/{0..15}.json   單位分片:單位 → 出賽賽事、選手、得獎
 
@@ -226,19 +228,17 @@ def main():
         }
 
     # 輕量搜尋索引:name → [場次數, 名次數, 單位預覽] / unit → [場次數, 選手數]
-    search_index = {
-        "players": {
-            name: [
-                len(recs),
-                len(ranks.get(name, [])),
-                "、".join(sorted({u for r in recs for u in r["units"]})[:3]),
-            ]
-            for name, recs in players_out.items()
-        },
-        "units": {
-            unit: [len(rec["t"]), len({p for e in rec["t"] for p in e["players"]})]
-            for unit, rec in units_out.items()
-        },
+    search_players = {
+        name: [
+            len(recs),
+            len(ranks.get(name, [])),
+            "、".join(sorted({u for r in recs for u in r["units"]})[:3]),
+        ]
+        for name, recs in players_out.items()
+    }
+    search_units = {
+        unit: [len(rec["t"]), len({p for e in rec["t"] for p in e["players"]})]
+        for unit, rec in units_out.items()
     }
 
     # 分片
@@ -260,20 +260,23 @@ def main():
     (DATA_DIR / "players").mkdir(exist_ok=True)
     (DATA_DIR / "units").mkdir(exist_ok=True)
     (DATA_DIR / "index.json").write_text(dump(index), encoding="utf-8")
-    (DATA_DIR / "search-index.json").write_text(dump(search_index), encoding="utf-8")
+    (DATA_DIR / "search-index-players.json").write_text(dump(search_players), encoding="utf-8")
+    (DATA_DIR / "search-index-units.json").write_text(dump(search_units), encoding="utf-8")
     for i in range(SHARDS):
         (DATA_DIR / "players" / f"{i}.json").write_text(dump(player_shards[i]), encoding="utf-8")
         (DATA_DIR / "units" / f"{i}.json").write_text(dump(unit_shards[i]), encoding="utf-8")
-    # 舊的整包索引(已由分片取代)
+    # 舊的整包索引(已由分片/拆檔取代)
     (DATA_DIR / "players.json").unlink(missing_ok=True)
     (DATA_DIR / "units.json").unlink(missing_ok=True)
+    (DATA_DIR / "search-index.json").unlink(missing_ok=True)
 
     kb = lambda p: p.stat().st_size // 1024  # noqa: E731
     p_sizes = [kb(DATA_DIR / "players" / f"{i}.json") for i in range(SHARDS)]
     u_sizes = [kb(DATA_DIR / "units" / f"{i}.json") for i in range(SHARDS)]
     print(f"索引完成:{len(index)} 場賽事、{len(players_out)} 位選手、{len(units_out)} 個單位")
-    print(f"檔案大小(KB):index={kb(DATA_DIR / 'index.json')}"
-          f" search-index={kb(DATA_DIR / 'search-index.json')}"
+    print(f"檔案大小(KB, 未壓縮;線上有 gzip 約 1/3):index={kb(DATA_DIR / 'index.json')}"
+          f" search-index players={kb(DATA_DIR / 'search-index-players.json')}"
+          f"/units={kb(DATA_DIR / 'search-index-units.json')}"
           f" players分片={sum(p_sizes)}(最大單片 {max(p_sizes)})"
           f" units分片={sum(u_sizes)}(最大單片 {max(u_sizes)})")
 
