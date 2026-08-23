@@ -51,6 +51,9 @@ MATCHTYPE_MAP = {
 }
 MATCHTYPE_OK = {"預賽", "R34", "F2", "F3", "F4"} | {f"R{n}" for n in
                                                    (2, 3, 4, 8, 16, 32, 64, 128, 256)}
+# 不屬於賽制的場次:表演/交流性質,勝負不該計入選手戰績,整場不收錄
+# (lapgo-153 律師盃邀請賽的 9 場團體「友誼賽」)。
+MATCHTYPE_DROP = {"友誼賽", "表演賽", "熱身賽", "交流賽"}
 HEAD_MAP = {"single": "單打", "double": "雙打", "group": "團體"}
 RANK_WORD = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8}
 _RESULT_LINE = re.compile(r'<div class="result_line">(.*?)</div>', re.S)
@@ -220,7 +223,7 @@ def align_groups(names, known):
     return mapping
 
 
-def normalize_matches(table, warn_unknown=None):
+def normalize_matches(table, warn_unknown=None, dropped=None):
     """LAPGO 一列 = 一局(單雙打)或一點(團體);依 (session_group_id, session_num) 併成一場。"""
     gnames = canonical_group_names(table)
     grouped = {}
@@ -236,6 +239,10 @@ def normalize_matches(table, warn_unknown=None):
             continue
 
         raw_type = (first.get("type") or "").strip()
+        if raw_type in MATCHTYPE_DROP:
+            if dropped is not None:
+                dropped.append(raw_type)
+            continue
         mt = MATCHTYPE_MAP.get(raw_type, raw_type)
         if mt and mt not in MATCHTYPE_OK and warn_unknown is not None:
             warn_unknown.add(raw_type)
@@ -407,11 +414,15 @@ def build_record(api, info, existing):
     }
 
     unknown = set()
+    dropped = []
     table = api.scores(cid)
     time.sleep(0.4)
-    matches = normalize_matches(table, unknown) if table else []
+    matches = normalize_matches(table, unknown, dropped) if table else []
     if unknown:
         print(f"  [警告] {openid} 未知 matchtype: {sorted(unknown)}")
+    if dropped:
+        kinds = ", ".join(sorted(set(dropped)))
+        print(f"  [略過] {openid} 非賽制場次 {len(dropped)} 場({kinds})")
 
     if matches:
         record["matches"] = matches
