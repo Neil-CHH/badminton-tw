@@ -59,15 +59,23 @@ def split_names(cell):
     return [n for n in (clean_name(x) for x in out) if n]
 
 
-def concatenated(name, units):
-    """姓名裡包住了單位名 = 版面沒對上、把單位和姓名黏成一格
-    (682391「南投縣內湖國民小學龔品丞」)。
+def strip_unit_prefix(name, units):
+    """姓名格裡混進單位名就剝掉。回傳 (修好的姓名, 是否有修)。
 
-    **不能改用字數上限或賽制字眼判斷** —— 實測會誤殺真資料:原住民姓名
+    682391 日月潭盃「公開國小高年級組男單」第二名,官方 PDF 的姓名格直接寫成
+    「南投縣內湖國民小學龔品丞」(同一份的縣內組寫的是正確的「龔品丞」)——
+    是主辦填表填錯,不是版面問題,剝掉前綴就對了。
+
+    **不能改用字數上限或賽制字眼判斷姓名合不合理** —— 實測會誤殺真資料:原住民姓名
     「伊斯瑪哈撒嗯拉嘎夫」9 個字,而隊名本來就常含賽制字眼
     (「可以靠553拿名次嗎」「單打手的驕傲」「臺中羽球單打團」)。
     """
-    return any(u and u != name and u in name for u in units)
+    for u in sorted((x for x in units if x and x != name), key=len, reverse=True):
+        if name.startswith(u) and len(name) > len(u):
+            return name[len(u):], True
+        if name.endswith(u) and len(name) > len(u):
+            return name[:-len(u)], True
+    return name, False
 
 
 def parse_rank(text):
@@ -223,9 +231,13 @@ def parse_summary(doc, all_units=(), all_players=()):
                                 # 團體 0 個。不硬猜 —— 判不出賽制就交還人工。
                                 k = event_arity(group)
                                 if k is None or len(lines) <= k:
+                                    # 組別名看不出賽制(「女校長組」「教育行政人員組」)。
+                                    # 先當成折行的單位名記著,等整份表看完再決定 ——
+                                    # 若整份表沒有任何一組出現選手名,那就是純團體賽事,
+                                    # 這些多行儲存格必然是隊名折行(282076 教育盃)。
                                     unresolved = True
-                                    break
-                                if k == 0:
+                                    unit = joined
+                                elif k == 0:
                                     unit = joined
                                 else:
                                     unit = join_wrapped(lines[:-k])
@@ -236,12 +248,14 @@ def parse_summary(doc, all_units=(), all_players=()):
                     if not unit and not names:
                         continue                      # 空格/畫斜線 = 從缺
                     entries.append((rank, unit, names))
-                if unresolved:
-                    out.append((None, group or "?"))
-                elif group and entries:
-                    out.append((group, entries))
+                if group and entries:
+                    out.append((None if unresolved else group, entries, group))
                 i += 3 if name_row else 2
-    return out
+
+    # 純團體賽事的補救:整份成績表都沒有選手名 → 判不出賽制的那幾組就是隊名折行
+    if not any(ns for g, es, _n in out if g is not None for _r, _u, ns in es):
+        out = [(g if g is not None else name, es, name) for g, es, name in out]
+    return [(g, es) if g is not None else (None, name) for g, es, name in out]
 
 
 def resolve_group(pdf_group, known, roster, pdf_names):
@@ -345,11 +359,20 @@ def process(openid, apply=False):
         in_group = roster.get(g, {})
         if how == "new":
             new_groups += 1
-        weird = [n for _r, _u, ns in entries for n in ns
-                 if concatenated(n, all_units)]
-        if weird:
-            rejected.append((pdf_group, f"版面判讀失敗,單位與姓名黏在一起 {weird[:2]}"))
-            continue
+        # 姓名格裡混進單位名 → 剝掉前綴修好(官方填表失誤,見 strip_unit_prefix)
+        cleaned_entries, stripped = [], []
+        for rank, unit, names in entries:
+            fixed_names = []
+            for n in names:
+                fixed, did = strip_unit_prefix(n, all_units)
+                if did:
+                    stripped.append(f"{n}→{fixed}")
+                fixed_names.append(fixed)
+            cleaned_entries.append((rank, unit, fixed_names))
+        entries = cleaned_entries
+        pdf_names = {n for _r, _u, ns in entries for n in ns}
+        if stripped:
+            warned.append((pdf_group, "姓名格混進單位名,已剝除:" + "; ".join(stripped[:3])))
         rows, unmatched = [], []
         for rank, unit, names in entries:
             for n in names:
