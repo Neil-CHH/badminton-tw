@@ -21,6 +21,20 @@ TOURN_DIR = ROOT / "docs" / "data" / "tournaments"
 RESULT_KEYWORDS = ("總成績", "成績紀錄", "成績記錄", "成績總表", "成績冊", "名次表")
 
 
+def handled_elsewhere():
+    """名次已由別的官方來源補齊、掛著的 PDF 不是成績總表的賽事。
+
+    全運會/全中運「成績紀錄」PDF 是完成後的籤表(空間排版、整份沒有成績總表),
+    名次改由主辦競賽資訊系統的官方頒獎名單收(source=official,見 scrape_sportgov),
+    留在待補清單只會每次都被當成 762 筆「可覆蓋」的噪音。
+    """
+    try:
+        import scrape_sportgov as sg
+        return set(sg.SITES) | set(sg.QUALIFIERS)
+    except Exception:                 # noqa: BLE001
+        return set()
+
+
 def result_docs(t):
     out = []
     for d in t.get("documents") or []:
@@ -36,8 +50,11 @@ def main():
     ap.add_argument("--all", action="store_true", help="連沒有 PDF 的缺口也一併列出")
     args = ap.parse_args()
 
+    skip = handled_elsewhere()
     have_pdf, no_pdf = [], []
     for p in sorted(TOURN_DIR.glob("*.json")):
+        if p.stem in skip:
+            continue
         t = json.loads(p.read_text(encoding="utf-8"))
         srcs = Counter(s.get("source") for s in t.get("standings") or [])
         # 已經有 pdf 名次的組別不算缺口;全場皆 pdf 就完全不用處理

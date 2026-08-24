@@ -181,81 +181,105 @@ def parse_summary(doc, all_units=(), all_players=()):
         if "項目" not in text:
             continue
         for tab in page.find_tables().tables:
-            rows = tab.extract()
-            i = 0
-            while i < len(rows):
-                row = [clean(c) for c in rows[i]]
-                if not row or row[0].replace(" ", "") != "項目":
-                    i += 1
-                    continue
-                ranks = [(j, parse_rank(row[j])) for j in range(1, len(row))]
-                ranks = [(j, r) for j, r in ranks if r]
-                if not ranks or i + 1 >= len(rows):
-                    i += 1
-                    continue
-                group = join_wrapped(cell_lines(rows[i + 1][0]))
-                # 選手列:下一列第 0 欄是空的(組別欄用 rowspan 併格)才算
-                name_row = None
-                if i + 2 < len(rows):
-                    nxt = [clean(c) for c in rows[i + 2]]
-                    if not nxt[0] and any(nxt[1:]):
-                        name_row = nxt
-                entries, unresolved = [], False
-                for j, rank in ranks:
-                    unit, names = "", []
-                    if name_row and j < len(name_row) and name_row[j]:
-                        unit = join_wrapped(cell_lines(rows[i + 1][j])) \
-                            if j < len(rows[i + 1]) else ""
-                        names = split_names(name_row[j])
-                    elif j < len(rows[i + 1]):
-                        lines = cell_lines(rows[i + 1][j])
-                        if len(lines) <= 1:
-                            unit = join_wrapped(lines)
-                        else:
-                            joined = join_wrapped(lines)
-                            # 首選判準:最後一行是不是「這場比賽出現過的選手」。
-                            # 是 → 版面 B(單位+選手同格);不是 → 單位名被折行。
-                            # 不能反過來用「接起來是不是已知單位」判斷 —— 官方 PDF 寫
-                            # 全稱「臺中市北屯區四維國民小學」,比分只寫「四維國小」,
-                            # 對不上,團體組會全數落空(341170/765740/535938 共 22 組)。
-                            if lines[-1] in all_players:
-                                unit = join_wrapped(lines[:-1])
-                                names = split_names(lines[-1])
-                            elif joined in all_players:
-                                names = split_names(joined)
-                            elif all_players:
-                                unit = joined      # 有名單可查卻查無 → 折行的單位名
-                            else:
-                                # 這場完全沒有比分可對照(排名賽/全大運 API 回空)。
-                                # 退而用組別名判斷賽制:單打拿 1 個名字、雙打 2 個、
-                                # 團體 0 個。不硬猜 —— 判不出賽制就交還人工。
-                                k = event_arity(group)
-                                if k is None or len(lines) <= k:
-                                    # 組別名看不出賽制(「女校長組」「教育行政人員組」)。
-                                    # 先當成折行的單位名記著,等整份表看完再決定 ——
-                                    # 若整份表沒有任何一組出現選手名,那就是純團體賽事,
-                                    # 這些多行儲存格必然是隊名折行(282076 教育盃)。
-                                    unresolved = True
-                                    unit = joined
-                                elif k == 0:
-                                    unit = joined
-                                else:
-                                    unit = join_wrapped(lines[:-k])
-                                    for ln in lines[-k:]:
-                                        names.extend(split_names(ln))
-                    if unit in PLACEHOLDER or any(n in PLACEHOLDER for n in names):
-                        continue                      # 官方沒填,只留樣板字
-                    if not unit and not names:
-                        continue                      # 空格/畫斜線 = 從缺
-                    entries.append((rank, unit, names))
-                if group and entries:
-                    out.append((None if unresolved else group, entries, group))
-                i += 3 if name_row else 2
+            scan_table(tab.extract(), all_units, all_players, out)
+    return finish_summary(out)
 
+
+def scan_table(rows, all_units, all_players, out):
+    """掃一張表格,把找到的成績總表區塊追加進 out。
+
+    版面是「項目列 → 單位列 →(選手列)」三列一組,同一張表裡可以出現很多組
+    (組別多到一頁排不下時,官方會再起一個項目列接著排)。
+    """
+    i = 0
+    while i < len(rows):
+        row = [clean(c) for c in rows[i]]
+        if not row or row[0].replace(" ", "") != "項目":
+            i += 1
+            continue
+        ranks = [(j, parse_rank(row[j])) for j in range(1, len(row))]
+        ranks = [(j, r) for j, r in ranks if r]
+        if not ranks or i + 1 >= len(rows):
+            i += 1
+            continue
+        group = join_wrapped(cell_lines(rows[i + 1][0]))
+        # 選手列:下一列第 0 欄是空的(組別欄用 rowspan 併格)才算
+        name_row = None
+        if i + 2 < len(rows):
+            nxt = [clean(c) for c in rows[i + 2]]
+            if not nxt[0] and any(nxt[1:]):
+                name_row = nxt
+        entries, unresolved = [], False
+        for j, rank in ranks:
+            unit, names = "", []
+            if name_row and j < len(name_row) and name_row[j]:
+                unit = join_wrapped(cell_lines(rows[i + 1][j])) \
+                    if j < len(rows[i + 1]) else ""
+                names = split_names(name_row[j])
+            elif j < len(rows[i + 1]):
+                lines = cell_lines(rows[i + 1][j])
+                if len(lines) <= 1:
+                    unit = join_wrapped(lines)
+                else:
+                    joined = join_wrapped(lines)
+                    # 首選判準:最後一行是不是「這場比賽出現過的選手」。
+                    # 是 → 版面 B(單位+選手同格);不是 → 單位名被折行。
+                    # 不能反過來用「接起來是不是已知單位」判斷 —— 官方 PDF 寫
+                    # 全稱「臺中市北屯區四維國民小學」,比分只寫「四維國小」,
+                    # 對不上,團體組會全數落空(341170/765740/535938 共 22 組)。
+                    if lines[-1] in all_players:
+                        unit = join_wrapped(lines[:-1])
+                        names = split_names(lines[-1])
+                    elif joined in all_players:
+                        names = split_names(joined)
+                    elif all_players:
+                        unit = joined      # 有名單可查卻查無 → 折行的單位名
+                    else:
+                        # 這場完全沒有比分可對照(排名賽/全大運 API 回空)。
+                        # 退而用組別名判斷賽制:單打拿 1 個名字、雙打 2 個、
+                        # 團體 0 個。不硬猜 —— 判不出賽制就交還人工。
+                        k = event_arity(group)
+                        if k is None or len(lines) <= k:
+                            # 組別名看不出賽制(「女校長組」「教育行政人員組」)。
+                            # 先當成折行的單位名記著,等整份表看完再決定 ——
+                            # 若整份表沒有任何一組出現選手名,那就是純團體賽事,
+                            # 這些多行儲存格必然是隊名折行(282076 教育盃)。
+                            unresolved = True
+                            unit = joined
+                        elif k == 0:
+                            unit = joined
+                        else:
+                            unit = join_wrapped(lines[:-k])
+                            for ln in lines[-k:]:
+                                names.extend(split_names(ln))
+            if unit in PLACEHOLDER or any(n in PLACEHOLDER for n in names):
+                continue                      # 官方沒填,只留樣板字
+            if not unit and not names:
+                continue                      # 空格/畫斜線 = 從缺
+            entries.append((rank, unit, names))
+        if group and entries:
+            out.append((None if unresolved else group, entries, group))
+        i += 3 if name_row else 2
+
+
+def finish_summary(out):
     # 純團體賽事的補救:整份成績表都沒有選手名 → 判不出賽制的那幾組就是隊名折行
     if not any(ns for g, es, _n in out if g is not None for _r, _u, ns in es):
         out = [(g if g is not None else name, es, name) for g, es, name in out]
     return [(g, es) if g is not None else (None, name) for g, es, name in out]
+
+
+def parse_summary_xlsx(path, all_units=(), all_players=()):
+    """xlsx 版的成績總表。版面與 PDF 完全一樣(主辦是同一套表格另存成 xlsx),
+    所以只把儲存格讀成 rows 再交給同一支 scan_table。"""
+    import openpyxl
+    out = []
+    wb = openpyxl.load_workbook(path, data_only=True)
+    for ws in wb.worksheets:
+        rows = [["" if c is None else str(c) for c in r]
+                for r in ws.iter_rows(values_only=True)]
+        scan_table(rows, all_units, all_players, out)
+    return finish_summary(out)
 
 
 def resolve_group(pdf_group, known, roster, pdf_names):
@@ -311,31 +335,58 @@ def manual_openids():
             out |= set(__import__(mod).DATA)
         except Exception:             # noqa: BLE001 匯入失敗就當作沒有人工資料
             pass
+    # 全運會/全中運同理:掛在 mylivescore 的「成績紀錄」PDF 其實是完成後的籤表,
+    # 名次已由主辦競賽資訊系統的官方頒獎名單補上(scrape_sportgov),不必再解 PDF。
+    try:
+        import scrape_sportgov as _sg
+        out |= set(_sg.SITES) | set(_sg.QUALIFIERS)
+    except Exception:                 # noqa: BLE001
+        pass
     return out
 
+
+# 官方成績總表不在 mylivescore 的賽事:mylivescore 掛的「總成績紀錄」其實是完成後的
+# 籤表(有「取 N 名」但沒有成績總表),真正的成績總表由主辦另外公告,只能人工取得。
+# 專案不留底官方 PDF,但這兩份是「唯一取得管道」——外站沒有穩定連結,所以收進 Ref/。
+LOCAL_SUMMARY = {
+    "537403": "Ref/114年臺中久樘盃國小羽球錦標賽_總成績表.pdf",
+    "751804": "Ref/2026金門縣浯洲盃全國羽球邀請賽_成績總表.xlsx",
+}
 
 MANUAL = manual_openids()
 
 
-def process(openid, apply=False):
+def process(openid, apply=False, local=None):
     if openid in MANUAL:
-        return {"openid": openid, "status": "人工已匯入,跳過"}
+        return {"openid": openid, "status": "名次已由其他來源匯入,跳過"}
     path = TOURN_DIR / f"{openid}.json"
     t = json.loads(path.read_text(encoding="utf-8"))
-    url, _title = result_pdf_url(t)
-    if not url:
-        return {"openid": openid, "status": "無總成績PDF"}
-    try:
-        doc = fitz.open(stream=fetch_pdf(openid, url), filetype="pdf")
-    except Exception as e:            # noqa: BLE001 下載/解析失敗只記錄,不中斷整批
-        return {"openid": openid, "status": f"PDF失敗:{type(e).__name__}"}
+    local = local or LOCAL_SUMMARY.get(openid)
+    if not local:
+        url, _title = result_pdf_url(t)
+        if not url:
+            return {"openid": openid, "status": "無總成績PDF"}
 
     roster = match_roster(t)
     all_units = {u for u in
                  ((m.get(k) or "").strip() for m in t.get("matches") or []
                   for k in ("teamA", "teamB")) if len(u) >= 2}
     all_players = {n for g in roster.values() for n in g}
-    parsed = parse_summary(doc, all_units, all_players)
+    try:
+        if local:
+            src = local if Path(local).is_absolute() else ROOT / local
+            if not src.exists():
+                return {"openid": openid, "status": f"找不到本地成績總表:{local}"}
+            if src.suffix.lower() in (".xlsx", ".xlsm"):
+                parsed = parse_summary_xlsx(src, all_units, all_players)
+            else:
+                parsed = parse_summary(fitz.open(src), all_units, all_players)
+        else:
+            parsed = parse_summary(
+                fitz.open(stream=fetch_pdf(openid, url), filetype="pdf"),
+                all_units, all_players)
+    except Exception as e:            # noqa: BLE001 下載/解析失敗只記錄,不中斷整批
+        return {"openid": openid, "status": f"PDF失敗:{type(e).__name__}"}
     # 版面不支援是「以組別為單位」的問題:同一份 PDF 常常絕大多數組別都是支援的版面,
     # 只有少數幾組(或別的附表)把單位與選手擠在同一格。整場放棄會白白丟掉大量正確資料
     # —— 341170 臺中市長盃 2,692 場比分就是這樣整場被誤判掉的。
@@ -431,7 +482,7 @@ def targets_all(force=False):
         srcs = {s.get("source") for s in t.get("standings") or []}
         if srcs == {"pdf"} and not force:
             continue
-        if result_pdf_url(t)[0]:
+        if result_pdf_url(t)[0] or p.stem in LOCAL_SUMMARY:
             out.append(p.stem)
     return out
 
@@ -439,6 +490,7 @@ def targets_all(force=False):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--openid")
+    ap.add_argument("--file", help="改讀本地成績總表(pdf/xlsx),不下載官方連結")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--force", action="store_true",
@@ -450,10 +502,12 @@ def main():
                else (targets_all(args.force) if args.all else None))
     if not targets:
         ap.error("需要 --openid 或 --all")
+    if args.file and len(targets) != 1:
+        ap.error("--file 只能配 --openid 用")
 
     results, ok, fail, rows, rej, warn, newg = [], 0, 0, 0, 0, 0, 0
     for i, oid in enumerate(targets, 1):
-        r = process(oid, apply=args.apply)
+        r = process(oid, apply=args.apply, local=args.file)
         results.append(r)
         if r["status"] == "OK":
             ok += 1

@@ -16,6 +16,11 @@
 | lapgo.com.tw | `lapgo-122` | API | API | 官方成績總表 API → `official`(可到第 5 名) |
 | tsbadminton.url.tw | `tsba-2024-會長盃` | 分類頁 HTML | ❌ 無 | 成績圖片視覺解析 + 名冊校對 → `ocr` |
 
+**第四個來源不建賽事,只補內容**:全運會/全中運的官方競賽資訊系統
+(`scrape_sportgov.py`,見下文)。那兩場賽事本來就以 mylivescore 的 openid 在庫裡、
+只是 API 回空,所以一律**就地補進既有賽事檔**(`source` 維持 mylivescore)。
+另建一筆會變成同一場賽事兩張卡片,正是 dedupe 在處理的老問題。
+
 **名次優先序**(`sources_common.merge_standings`,以「組別」為單位取最高者,同組不混用):
 `pdf` ≧ `official` > `ocr` > `derived`。
 
@@ -85,17 +90,23 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
 - `scripts/scrape.py` — mylivescore:API 抓取+組別標籤+名次推導(`--full`、`--no-index`)
 - `scripts/scrape_lapgo.py` — lapgo:比分正規化 + 官方成績總表 → standings
 - `scripts/scrape_tsba.py` — tsba:文件清單 +(`--stage-results`)備妥成績圖與名冊
+- `scripts/scrape_sportgov.py` — 全運會/全中運官方競賽資訊系統 → 逐場比分 + 官方頒獎名單
+  (`official`);資格賽只有籤表 PDF,收 `entries[]`。**不在 update_all 裡**,新一屆才手動跑
 - `scripts/tsba_xlsx.py` — 由籤表 xlsx 抽參賽名冊與比賽日期
 - `scripts/tsba_reconcile.py` — 成績圖解析結果 × 名冊校對 → `source:"ocr"` 的 standings
 - `scripts/dedupe.py` — 跨來源重複賽事偵測與刪檔(重建索引前跑);
   登錄檔 `scripts/duplicates.json` 同時是爬蟲的阻擋清單
 - `scripts/parse_result_pdf.py` — **官方總成績紀錄 PDF → standings(source=pdf)**,
-  自動解析成績總表(mylivescore 的 PDF 是可抽文字的向量表格,不必視覺判讀)
+  自動解析成績總表(mylivescore 的 PDF 是可抽文字的向量表格,不必視覺判讀);
+  成績總表不在 mylivescore、只能人工取得的少數賽事登錄在 `LOCAL_SUMMARY` → 讀 `Ref/`
+  的本地檔(pdf 或 xlsx 版面完全一樣,共用同一支 `scan_table`)
 - `scripts/rederive_standings.py` — 用現有比分重跑 derive_standings(改過推導規則後跑)
 - `scripts/pdf_backfill_list.py` — 列出「有官方 PDF 但名次仍非 pdf」的待補清單
 - `scripts/rebuild_index.py` — 由 tournaments/*.json 重建索引與分片(匯入後必跑)
 - `scripts/verify_data.py` — 資料健檢(連結一致性/索引新鮮度/分片落點/亂碼/缺口),只讀不寫
 - `inbox/` — 待匯入 PDF 與 tsba 待解析素材暫放(整個目錄 gitignore)
+- `Ref/` — **進版控**的少數官方文件:網路上沒有穩定連結、只能人工取得,而程式又要靠它
+  重跑(`parse_result_pdf.LOCAL_SUMMARY`)。這是「官方 PDF 不留底」的唯一例外
 
 ## mylivescore.tw API(2026-06 偵察,細節勿憑記憶,以 scrape.py 為準)
 
@@ -163,6 +174,40 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
 - 賽事日期只有賽程表 xlsx 的日賽程分頁才有(列表頁的日期是公告有效期,不是賽期)。
 - 早年附件是 `.xls` 舊二進位格式,openpyxl 讀不了,只收 `.xlsx`。
 
+## 全運會 / 全中運官方競賽資訊系統(2026-08 偵察,以 scrape_sportgov.py 為準)
+
+主辦縣市自架的「運動賽會競賽資訊系統」,兩屆用**同一套 CMS**(路徑、參數、欄位全同),
+只有 host 不同:114 全運會 `sport114.yunlin.gov.tw`、115 全中運 `sport115.cyc.edu.tw`。
+新一屆就在 `SITES` 加一筆(host + openid + 項目標題對照)再跑一次。
+
+- 端點(`LID` 是運動種類,羽球固定 202):`Score/Instant_List.php?LID=202` 場次清單 →
+  `Score/InstantScore.php?FID=&PID=` 逐場成績 → `Score/Instant_ListDetail.php?SSID=`
+  團體賽逐點明細 → `Score/Finals_Score.php?FID=` 頒獎名單(名次+單位+選手)。
+- **PID 才是「項目」的穩定鍵**,FID 是「項目 × 比賽日」;同 PID 的場次要合成一組。
+  只有最後一天的 FID 有頒獎名單連結。
+- 項目標題用**整串對照表**換成組別名(對不上就報錯停下,不用拆字規則猜)。全中運沿用
+  570139(114 年會內賽)的簡寫「高男團 / 國女單」,兩屆的組別名才對得起來。
+- **輪次不可以自己往前推**:全運團體是兩組循環賽再交叉、全運個人是 16 籤全程排名賽
+  (輸的人繼續打到定出 1~8 名)、全中運是乾淨的 8 籤淘汰 —— 同樣是「決賽的前一場」,
+  前者是循環賽、後者是八強。只認兩件事:雲林站備註欄寫的「第1.2名/第3.4名/第5.6名/
+  第7.8名」,以及嘉義站(備註欄全空)由**官方頒獎名單**認出的第 1/2 名與第 3/4 名交手場
+  (還要是雙方各自的最後一場)。再往前只補一層「決賽雙方的上一場 = R4」。
+- **個人賽同一縣市可以派兩組人**(114 全運男單澎湖縣的王柏崴與劉韋奇同時打準決賽),
+  比對「哪一方」時只認單位會撞在一起,要連姓名一起認。
+- 局分格是「上行甲方各局、下行乙方各局」,但實測 3/252 列被主辦填成**轉置**的
+  「一行 = 一局」(會讀出 21:21 這種平局)。兩種讀法都算一次,拿官方「成績」欄裁決。
+- 單位格偶爾接上出賽狀態(「臺南市 請假」)要剝掉;而且狀態字**有時掛在贏的那一方**
+  (114 全運男雙第 5 場高雄市標傷退卻 2:0 勝),`abstain` 只登錄輸的那一方。
+- W/O 一分未打也**要留一列 scoreinfo** —— 選手名只存在於 scoreinfo,整列略過會讓
+  那兩位選手在這場憑空消失;棄權方的分數沿用庫裡既有寫法「棄」。
+- **資格賽不進這套系統**:成績只有掛在賽事消息頁附件的籤表 PDF,而且官方「成績總表」
+  列的是**晉級名單、不是 1~N 名** → 只收 `entries[]`,不產生 standings。籤表的
+  「序號 縣市」+ 下一行姓名可以穩定抽出席位,雙打的搭檔寫在席位行**之前**、中間常插
+  進賽程節點文字,所以往回找「同頁、同名的裸縣市行」而不是固定往回數幾行。抽到的
+  席位數要對得上籤表標題宣告的人數/組數才收(實測 5 個項目 41/35/40/33/38 全中)。
+- 補進來的官方頁面連結在 `documents[]` 帶 `source: "sportgov"`,`fetch_docs` 看到這個
+  標記就不會在重抓 links.php 時把它整包洗掉。
+
 ## 資料模型重點
 
 - `matches[]` 為 API schedule 原樣:teamA/B=單位名(自由填寫,同校多種寫法,**不做正規化**,
@@ -221,12 +266,14 @@ python scripts/scrape_tsba.py     # 只跑 tsba(--dry-run / --no-detail)
 python scripts/scrape_tsba.py --build-entries   # 由賽程表 xlsx 建參賽名單(缺才抓)
 python scripts/scrape_tsba.py --stage-results    # 備妥 tsba 成績圖與名冊供視覺解析
 python scripts/tsba_reconcile.py --openid X --input raw.json [--apply]  # 名冊校對
+python scripts/scrape_sportgov.py --dry-run   # 全運會/全中運官方系統(--apply 才寫檔)
 python scripts/fetch_docs.py      # 更新官方文件連結(增量,不下載;只對 mylivescore)
 python scripts/fetch_docs.py --relink   # 不打 API,只重新同步 regulation.pdf/resultPdf
 python scripts/dedupe.py --dry-run  # 看重複判定(含獲獎內容比對),不動檔
 python scripts/dedupe.py          # 刪除重複賽事檔並登錄(update_all 已內含)
 python scripts/dedupe.py --merge 630550 628963   # 先併名次再刪 shadow(人工確認後才跑)
 python scripts/parse_result_pdf.py --openid X          # 解析官方總成績 PDF(只看報告)
+python scripts/parse_result_pdf.py --openid X --file Ref/成績總表.xlsx --apply  # 讀本地檔
 python scripts/parse_result_pdf.py --all --apply       # 全庫套用(--force 連已是 pdf 的也重跑)
 python scripts/pdf_backfill_list.py                    # 待補 PDF 清單
 python scripts/rederive_standings.py --apply           # 改過推導規則後重推(不連網)

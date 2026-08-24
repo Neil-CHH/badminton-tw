@@ -122,6 +122,11 @@ def process(t):
         docs.append({"title": title, "url": link,
                      "date": it.get("Stime", ""), "type": classify(title, link)})
 
+    # 別的 scraper 補進來的官方連結要留著:links.php 只知道 mylivescore 自己掛的檔,
+    # 全運會/全中運的官方賽程成績頁是 scrape_sportgov 補的(帶 source 標記),
+    # 直接整包覆蓋會在下一次 --force 時把它們洗掉。
+    docs += [d for d in (t.get("documents") or []) if d.get("source")]
+
     changed = docs != t.get("documents")
     t["documents"] = docs
     changed = sync_links(t) or changed
