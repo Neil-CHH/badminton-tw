@@ -119,8 +119,51 @@ def result_pdf_url(t):
     return None, None
 
 
-def parse_summary(doc):
-    """回傳 [(組別, [(rank, 單位, [選手,...]), ...]), ...];找不到成績總表回 []。"""
+def event_arity(group):
+    """組別名 → 一筆名次該有幾個選手名。團體 0、雙打 2、單打 1、判不出來 None。
+
+    只在「完全沒有比分可以對照」時才用(排名賽/全大運的 API 回空)。組別名確實編碼了
+    賽制,這跟拿賽制字眼去驗「人名合不合理」是兩回事 —— 後者會誤殺真隊名。
+    """
+    g = re.sub(r"\s+", "", group or "")
+    if not g:
+        return None
+    if "團" in g or "隊" in g:
+        return 0
+    if "雙" in g:
+        return 2
+    if "單" in g:
+        return 1
+    return None
+
+
+def cell_lines(raw):
+    return [x.strip() for x in (raw or "").replace("\r", "").split("\n") if x.strip()]
+
+
+def join_wrapped(lines):
+    """把儲存格內被換行斷開的一段文字接回去。中文之間不補空格
+    (「臺中市北屯區四維國民小」+「學」是單位名被排版折行,不是兩個欄位),
+    英文之間才補,免得 'Taguchi' + 'Fuminari' 黏成一個字。"""
+    out = ""
+    for x in lines:
+        if out and re.search(r"[A-Za-z0-9]$", out) and re.match(r"[A-Za-z0-9]", x):
+            out += " "
+        out += x
+    return out
+
+
+def parse_summary(doc, all_units=(), all_players=()):
+    """回傳 [(組別, [(rank, 單位, [選手,...]), ...]), ...];找不到成績總表回 []。
+
+    `all_units` / `all_players` 取自該賽事的比分資料,用來分辨「一格裡有換行」的兩種
+    情況 —— 兩者長得一模一樣,只能靠實際資料判斷:
+      A. 單位名太長被排版折行:「臺中市北屯區四維國民小」+「學」→ 接回去就是單位名
+         (團體組很常見,341170/765740/535938 共 22 組都是這種)
+      B. 單位與選手擠在同一格:「合庫北市大」+「王子維」→ 最後一行是選手
+         (排名賽/全大運的版面)
+    分不出來的組別回 (None, 組別名),交還人工,不猜。
+    """
     out = []
     for page in doc:
         # 不能只認「成績總表」四個字:334198 全國國小盃的成績表沒寫這個標題,
@@ -142,35 +185,60 @@ def parse_summary(doc):
                 if not ranks or i + 1 >= len(rows):
                     i += 1
                     continue
-                unit_row = [clean(c) for c in rows[i + 1]]
-                group = unit_row[0]
+                group = join_wrapped(cell_lines(rows[i + 1][0]))
                 # 選手列:下一列第 0 欄是空的(組別欄用 rowspan 併格)才算
                 name_row = None
                 if i + 2 < len(rows):
                     nxt = [clean(c) for c in rows[i + 2]]
                     if not nxt[0] and any(nxt[1:]):
                         name_row = nxt
-                # 版面 B(排名賽/全大運):沒有獨立的選手列,單位與選手擠在同一格用換行
-                # 分隔(「中租國體大⏎戚又仁」、雙打是「單位1⏎單位2⏎選手1⏎選手2」)。
-                # 硬套版面 A 會把整格當成單位、選手變空,把人工判讀過的資料洗爛。
-                # 兩種版面的欄位語意不同,這裡只處理版面 A,版面 B 交還人工。
-                if name_row is None and any(
-                        "\n" in (rows[i + 1][j] or "") for j, _r in ranks):
-                    i += 2
-                    out.append((None, None))          # 標記:遇到不支援的版面
-                    continue
-                entries = []
+                entries, unresolved = [], False
                 for j, rank in ranks:
-                    unit = unit_row[j] if j < len(unit_row) else ""
-                    names = []
+                    unit, names = "", []
                     if name_row and j < len(name_row) and name_row[j]:
+                        unit = join_wrapped(cell_lines(rows[i + 1][j])) \
+                            if j < len(rows[i + 1]) else ""
                         names = split_names(name_row[j])
+                    elif j < len(rows[i + 1]):
+                        lines = cell_lines(rows[i + 1][j])
+                        if len(lines) <= 1:
+                            unit = join_wrapped(lines)
+                        else:
+                            joined = join_wrapped(lines)
+                            # 首選判準:最後一行是不是「這場比賽出現過的選手」。
+                            # 是 → 版面 B(單位+選手同格);不是 → 單位名被折行。
+                            # 不能反過來用「接起來是不是已知單位」判斷 —— 官方 PDF 寫
+                            # 全稱「臺中市北屯區四維國民小學」,比分只寫「四維國小」,
+                            # 對不上,團體組會全數落空(341170/765740/535938 共 22 組)。
+                            if lines[-1] in all_players:
+                                unit = join_wrapped(lines[:-1])
+                                names = split_names(lines[-1])
+                            elif joined in all_players:
+                                names = split_names(joined)
+                            elif all_players:
+                                unit = joined      # 有名單可查卻查無 → 折行的單位名
+                            else:
+                                # 這場完全沒有比分可對照(排名賽/全大運 API 回空)。
+                                # 退而用組別名判斷賽制:單打拿 1 個名字、雙打 2 個、
+                                # 團體 0 個。不硬猜 —— 判不出賽制就交還人工。
+                                k = event_arity(group)
+                                if k is None or len(lines) <= k:
+                                    unresolved = True
+                                    break
+                                if k == 0:
+                                    unit = joined
+                                else:
+                                    unit = join_wrapped(lines[:-k])
+                                    for ln in lines[-k:]:
+                                        names.extend(split_names(ln))
                     if unit in PLACEHOLDER or any(n in PLACEHOLDER for n in names):
                         continue                      # 官方沒填,只留樣板字
                     if not unit and not names:
                         continue                      # 空格/畫斜線 = 從缺
                     entries.append((rank, unit, names))
-                if group and entries:
+                if unresolved:
+                    out.append((None, group or "?"))
+                elif group and entries:
                     out.append((group, entries))
                 i += 3 if name_row else 2
     return out
@@ -217,14 +285,19 @@ def match_roster(t):
 
 
 def manual_openids():
-    """import_pdf_standings.py 裡逐列人工判讀過的賽事。那些 PDF 用的是本程式不支援的
-    版面,而且沒有比分可以交叉驗證(全大運/排名賽 API 回空),硬解析只會把已經正確的
-    資料洗爛 —— 整場跳過,不是只跳過同名組別。"""
-    try:
-        import import_pdf_standings
-        return set(import_pdf_standings.DATA)
-    except Exception:                 # noqa: BLE001 匯入失敗就當作沒有人工資料
-        return set()
+    """逐列人工判讀過的賽事(import_pdf_standings + import_observation_standings)。
+
+    那些 PDF 常用本程式不支援的版面,而且多半沒有比分可以交叉驗證(全大運/排名賽的
+    API 回空),硬解析只會把已經正確的資料洗爛 —— **整場跳過,不是只跳過同名組別**
+    (實測漏掉「同一場多出來的組別」就足以寫進亂資料)。
+    """
+    out = set()
+    for mod in ("import_pdf_standings", "import_observation_standings"):
+        try:
+            out |= set(__import__(mod).DATA)
+        except Exception:             # noqa: BLE001 匯入失敗就當作沒有人工資料
+            pass
+    return out
 
 
 MANUAL = manual_openids()
@@ -243,29 +316,29 @@ def process(openid, apply=False):
     except Exception as e:            # noqa: BLE001 下載/解析失敗只記錄,不中斷整批
         return {"openid": openid, "status": f"PDF失敗:{type(e).__name__}"}
 
-    parsed = parse_summary(doc)
-    if any(g is None for g, _e in parsed):
-        return {"openid": openid, "status": "版面不支援(單位與選手同格),需人工"}
+    roster = match_roster(t)
+    all_units = {u for u in
+                 ((m.get(k) or "").strip() for m in t.get("matches") or []
+                  for k in ("teamA", "teamB")) if len(u) >= 2}
+    all_players = {n for g in roster.values() for n in g}
+    parsed = parse_summary(doc, all_units, all_players)
+    # 版面不支援是「以組別為單位」的問題:同一份 PDF 常常絕大多數組別都是支援的版面,
+    # 只有少數幾組(或別的附表)把單位與選手擠在同一格。整場放棄會白白丟掉大量正確資料
+    # —— 341170 臺中市長盃 2,692 場比分就是這樣整場被誤判掉的。
+    unsupported = [g2 for g1, g2 in parsed if g1 is None]
+    parsed = [(g, e) for g, e in parsed if g is not None]
     if not parsed:
-        return {"openid": openid, "status": "找不到成績總表"}
+        return {"openid": openid,
+                "status": ("版面不支援(單位與選手同格),需人工" if unsupported
+                           else "找不到成績總表")}
 
-    # 既有的 pdf 名次是人工逐列判讀過的,優先度最高,一律不動
-    # (CLAUDE.md:pdf ≧ official > ocr > derived)。
-    locked = {s.get("group") for s in t.get("standings") or []
-              if s.get("source") == "pdf"}
 
     known = [k for k in
              sorted({base_group(m.get("groupName", "")) for m in t.get("matches") or []}
                     | {g.get("name") for g in t.get("groups") or [] if g.get("name")})
              if k]
-    roster = match_roster(t)
-    all_units = {u for u in
-                 ((m.get(k) or "").strip() for m in t.get("matches") or []
-                  for k in ("teamA", "teamB")) if len(u) >= 3}
-
     accepted, rejected, warned, fixes = [], [], [], 0
     new_groups = 0
-    skipped_locked = set()
     for pdf_group, entries in parsed:
         pdf_names = {n for _r, _u, ns in entries for n in ns}
         g, how = resolve_group(pdf_group, known, roster, pdf_names)
@@ -301,9 +374,6 @@ def process(openid, apply=False):
             rejected.append((pdf_group, f"→{g}:{len(unmatched)}/{len(named)} 名對不上,"
                                         f"疑似組別配錯"))
             continue
-        if g in locked:
-            skipped_locked.add(g)
-            continue
         if unmatched:
             warned.append((g, "; ".join(unmatched[:4])))
         accepted.extend(rows)
@@ -311,7 +381,7 @@ def process(openid, apply=False):
     res = {"openid": openid, "name": t.get("name"), "status": "OK",
            "groups": len({r["group"] for r in accepted}), "rows": len(accepted),
            "unitFixes": fixes, "newGroups": new_groups,
-           "keptManual": sorted(skipped_locked),
+           "unsupported": unsupported,
            "rejected": rejected, "warned": warned,
            "before": sorted({s.get("source") for s in t.get("standings") or []})}
 
@@ -373,6 +443,9 @@ def main():
                   f"{r['rows']:>4} 筆  {(r.get('name') or '')[:26]}")
             for g, why in r["rejected"][:3]:
                 print(f"        [不收] {g}:{why}")
+            if r.get("unsupported"):
+                print(f"        [版面不支援] {len(r['unsupported'])} 組需人工:"
+                      f"{r['unsupported'][:3]}")
             for g, why in r["warned"][:2]:
                 print(f"        [注意] {g}:{why}(比分未收錄該選手,照 PDF 收)")
         else:
