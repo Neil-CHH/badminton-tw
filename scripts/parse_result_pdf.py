@@ -386,10 +386,11 @@ def read_row(cells_row, name_row, ranks, group, all_players):
                         unit = joined
                     elif len(lines) == 2 * k:
                         # 每位選手各帶一個單位(雙打搭檔常分屬兩校):
-                        # 上半是單位、下半是選手。沿用既有寫法用全形斜線並列,
-                        # 整段接起來會黏成「國體大彰師大」這種不存在的單位。
-                        uniq = list(dict.fromkeys(lines[:k]))
-                        unit = "／".join(uniq)
+                        # 上半是單位、下半是選手。整段接起來會黏成「國體大彰師大」
+                        # 這種不存在的單位。這裡回傳「每位選手各自的單位」序列,
+                        # 由 process() 依 import_pdf_standings.build_entry 的既有寫法
+                        # 轉成 unit(全形斜線,顯示用)+ memberUnits(逐位歸屬,供索引)。
+                        unit = tuple(lines[:k])
                         for ln in lines[k:]:
                             names.extend(split_names(ln))
                     else:
@@ -460,7 +461,23 @@ def resolve_group(pdf_group, known, roster, pdf_names):
             continue
         if pdf_names & set(names):          # 名字對得上才承認這個配對
             return k, "fuzzy"
-    return pdf_group, "new"                 # 比分沒有這組 → 照 PDF 原名收錄
+    return tidy_group(pdf_group), "new"     # 比分沒有這組 → 由 PDF 原名自己命名
+
+
+# 「男子組單打」的「組」是版面用字,不是組別的一部分;官方排名賽 PDF 一律這樣寫,
+# 而前三屆人工匯入時都整理成「男子單打」。只在 resolve_group 判定 "new" 時套用 ——
+# 那表示比分裡根本沒有這組、名字是我們自己取的,改成跟同系列前幾屆一致才查得起來。
+# 有比分可對照的組別一律照比分的寫法,不動(實測全庫 226 份 PDF 只有排名賽三場中招)。
+_GROUP_TIDY = ((re.compile(r"(男子|女子)組(單打|雙打)$"), r"\1\2"),
+               (re.compile(r"男女混合雙打$"), "混合雙打"))
+
+
+def tidy_group(name):
+    for rx, rep in _GROUP_TIDY:
+        fixed = rx.sub(rep, name)
+        if fixed != name:
+            return fixed
+    return name
 
 
 def match_roster(t):
@@ -507,6 +524,30 @@ LOCAL_SUMMARY = {
 }
 
 MANUAL = manual_openids()
+
+try:
+    # 晉升甲組的規則只留一份(排名賽:乙組單打前 4、乙組雙打前 3),
+    # 前端 tournament.html 靠這個旗標畫「晉甲」標籤。
+    from import_pdf_standings import is_promoted     # noqa: E402
+except Exception:                                    # noqa: BLE001
+    def is_promoted(category, group, rank):
+        return False
+
+
+def unit_fields(unit):
+    """單位欄 → (顯示用單位, memberUnits 或 None)。
+
+    雙打搭檔分屬兩校時 unit 是「每位選手各自單位」的序列;寫法與
+    import_pdf_standings.build_entry 一致 —— `unit` 用全形斜線併起來給人看,
+    `memberUnits` 與 members 對齊供 rebuild_index 逐位歸屬。少了 memberUnits,
+    索引會把「國體大／彰師大」整串當成一個單位建進單位頁(實測會生出 43 個假單位)。
+    """
+    if isinstance(unit, (tuple, list)):
+        uniq = list(dict.fromkeys(unit))
+        if len(uniq) == 1:
+            return uniq[0], None
+        return "／".join(uniq), list(unit)
+    return unit, None
 
 
 def process(openid, apply=False, local=None):
@@ -591,8 +632,14 @@ def process(openid, apply=False, local=None):
                     fixed = next(iter(units))
             if fixed != unit:
                 fixes += 1
-            rows.append({"group": g, "rank": rank, "unit": fixed,
-                         "members": names, "source": "pdf"})
+            disp, munits = unit_fields(fixed)
+            row = {"group": g, "rank": rank, "unit": disp,
+                   "members": names, "source": "pdf"}
+            if munits:
+                row["memberUnits"] = munits
+            if is_promoted(t.get("category"), g, rank):
+                row["promoted"] = True
+            rows.append(row)
         # 名字大半對不上,只有在「組別是模糊配對來的」時才代表配錯 → 整組不收。
         # 組名完全相同就是同一組,名字對不上只表示該組比分收得不全(官方 PDF 才是全的),
         # 這時照收 PDF,否則會白白丟掉正確的名次。
