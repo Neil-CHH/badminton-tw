@@ -180,16 +180,118 @@ def parse_summary(doc, all_units=(), all_players=()):
         text = page.get_text()
         if "項目" not in text:
             continue
+        heads = section_heads(page)
         for tab in page.find_tables().tables:
-            scan_table(tab.extract(), all_units, all_players, out)
+            scan_table(tab.extract(), all_units, all_players, out,
+                       tab=tab, prefix=section_of(heads, tab.bbox))
     return finish_summary(out)
 
 
-def scan_table(rows, all_units, all_players, out):
+# 全形括號/冒號一律用碼位寫,避免編輯時被轉成半形而靜默失配
+_SECTION_RE = re.compile(
+    r"^[(（]?\s*[一二三四五六七八九十\d]+\s*[)）]?\s*"
+    r"([甲乙丙丁]組)\s*[:：]?\s*$")
+
+
+def section_heads(page):
+    """頁面上的「(一)甲組:」段落標題 → [(y, '甲組'), ...],由上而下。
+
+    甲組與乙組是**兩張分開的表**,而且項目欄寫的都是「男子組單打」——
+    標題只存在表格外面,不撈進來兩組會撞名而互相蓋掉
+    (259196 王子維的甲組冠軍和蕭順的乙組冠軍會併成同一組的兩個第一名)。
+    """
+    heads = []
+    for b in page.get_text("blocks"):
+        y0, raw = b[1], b[4]
+        for ln in (raw or "").splitlines():
+            m = _SECTION_RE.match(clean(ln))
+            if m:
+                heads.append((y0, m.group(1)))
+    return sorted(heads)
+
+
+def section_of(heads, bbox):
+    """表格上方最近的一個段落標題。"""
+    top = bbox[1]
+    found = ""
+    for y, name in heads:
+        if y <= top + 1:
+            found = name
+        else:
+            break
+    return found
+
+
+def rank_columns(rows, i, tab):
+    """名次表頭列 → [(欄索引, 名次), ...]。
+
+    **水平合併的表頭格代表並列名次**,不是漏抽:259196 乙組男單的「第三名」跨兩欄
+    (廖維擇、鍾宸謙並列第三)、「第五名」跨四欄(四個並列第五)。抽文字只會拿到
+    ['第三名', ''],後面那幾欄看起來沒有名次就被整欄丟掉。改以儲存格框線判斷 ——
+    合併格的 bbox 橫跨數欄,凡是中心落在框內的欄都算同一個名次。
+    """
+    row = [clean(c) for c in rows[i]]
+    plain = [(j, parse_rank(row[j])) for j in range(1, len(row))]
+    plain = [(j, r) for j, r in plain if r]
+    try:
+        cells = tab.rows[i].cells
+        ref = max((r.cells for r in tab.rows),
+                  key=lambda cs: sum(1 for c in cs if c))
+    except Exception:                     # noqa: BLE001 拿不到框線就只認文字
+        return plain
+    if not cells or not ref:
+        return plain
+    # 欄的 x 中心取自「格子最完整」的那一列(表頭本身可能就是合併過的)
+    centers = [((c[0] + c[2]) / 2 if c else None) for c in ref]
+    out = {}
+    for j, cell in enumerate(cells):
+        if j >= len(row) or cell is None:
+            continue
+        rank = parse_rank(row[j])
+        if not rank:
+            continue
+        for k, cx in enumerate(centers):
+            if k and cx is not None and cell[0] - 1 <= cx <= cell[2] + 1:
+                out[k] = rank
+    return sorted(out.items()) or plain
+
+
+def group_cols(rows, i, row, ranks):
+    """組別標籤佔了最前面幾欄。一般是 1 欄,兩欄的版面回 2。
+
+    788659 與 285270 的「項目」是兩欄:左欄年齡組(U19 / 高中組,用 rowspan 併格)、
+    右欄項目(男子單打)。只讀左欄會得到「U19」這種判不出賽制的組別名,而右欄會被
+    當成第一名的資料格 —— 單位與姓名整串錯位(788659 已經這樣寫進資料庫 13 筆)。
+
+    兩個條件同時成立才算,少一個都會誤判:
+      1. 第 1 欄沒有自己的名次表頭 —— 不是空的(788659),就是和第 2 欄共用一個
+         合併表頭(285270 的「第一名」橫跨項目右欄與真正的第一名欄)。
+      2. 第 1 欄併進來之後**組別名才判得出賽制**。少了這條會誤殺並列第一名跨兩欄
+         的正常版面,也擋得住隊名剛好含「單打/團」等字眼的情形
+         (「臺中羽球單打團」是真隊名,見 strip_unit_prefix 的註解)。
+    """
+    rk = dict(ranks)
+    if len(row) <= 2 or i + 1 >= len(rows):
+        return 1
+    if 1 in rk and rk.get(1) != rk.get(2):
+        return 1
+    nxt = rows[i + 1]
+    lab0 = join_wrapped(cell_lines(nxt[0])) if len(nxt) > 0 else ""
+    lab1 = join_wrapped(cell_lines(nxt[1])) if len(nxt) > 1 else ""
+    if lab0 and lab1 and event_arity(lab0) is None \
+            and event_arity(lab0 + lab1) is not None:
+        return 2
+    return 1
+
+
+def scan_table(rows, all_units, all_players, out, tab=None, prefix=""):
     """掃一張表格,把找到的成績總表區塊追加進 out。
 
-    版面是「項目列 → 單位列 →(選手列)」三列一組,同一張表裡可以出現很多組
-    (組別多到一頁排不下時,官方會再起一個項目列接著排)。
+    兩種版面都要吃:
+      (a)「項目列 → 單位列 →(選手列)」三列一組,同一張表裡可以出現很多組;
+      (b)**一個名次表頭底下接連好幾個組別**,每組各佔一列(259196 排名賽,甲組五個
+         項目共用一個「第一名…第八名」表頭)。舊寫法讀完一組就跳兩三列,(b) 版面
+         只會收到第一組 —— 甲組男雙/女單/女雙/混雙整批靜默消失,不會報錯。
     """
     i = 0
     while i < len(rows):
@@ -197,76 +299,127 @@ def scan_table(rows, all_units, all_players, out):
         if not row or row[0].replace(" ", "") != "項目":
             i += 1
             continue
-        ranks = [(j, parse_rank(row[j])) for j in range(1, len(row))]
-        ranks = [(j, r) for j, r in ranks if r]
-        if not ranks or i + 1 >= len(rows):
+        ranks = rank_columns(rows, i, tab)
+        if not ranks:
             i += 1
             continue
-        group = join_wrapped(cell_lines(rows[i + 1][0]))
-        # 選手列:下一列第 0 欄是空的(組別欄用 rowspan 併格)才算
-        name_row = None
-        if i + 2 < len(rows):
-            nxt = [clean(c) for c in rows[i + 2]]
-            if not nxt[0] and any(nxt[1:]):
-                name_row = nxt
-        entries, unresolved = [], False
-        for j, rank in ranks:
-            unit, names = "", []
-            if name_row and j < len(name_row) and name_row[j]:
-                unit = join_wrapped(cell_lines(rows[i + 1][j])) \
-                    if j < len(rows[i + 1]) else ""
-                names = split_names(name_row[j])
-            elif j < len(rows[i + 1]):
-                lines = cell_lines(rows[i + 1][j])
-                if len(lines) <= 1:
-                    unit = join_wrapped(lines)
+        gcols = group_cols(rows, i, row, ranks)
+        ranks = [(j, r) for j, r in ranks if j >= gcols]
+        if not ranks:
+            i += 1
+            continue
+        carry = {}
+        i += 1
+        while i < len(rows):                       # 一路吃到下一個名次表頭為止
+            head = [clean(c) for c in rows[i]]
+            if head and head[0].replace(" ", "") == "項目":
+                break
+            labels = []
+            for c in range(gcols):
+                v = join_wrapped(cell_lines(rows[i][c])) if c < len(rows[i]) else ""
+                if v:
+                    carry[c] = v
+                labels.append(v or carry.get(c, ""))
+            group = "".join(labels)
+            # 選手列:組別欄整個空著(用 rowspan 併格)才算
+            name_row = None
+            if i + 1 < len(rows):
+                nxt = [clean(c) for c in rows[i + 1]]
+                if not any(nxt[:gcols]) and any(nxt[gcols:]):
+                    name_row = nxt
+            entries, unresolved = read_row(
+                rows[i], name_row, ranks, group, all_players)
+            if prefix and not group.startswith(prefix):
+                group = prefix + group
+            if group and entries:
+                out.append((None if unresolved else group, entries, group))
+            i += 2 if name_row else 1
+
+
+def read_row(cells_row, name_row, ranks, group, all_players):
+    """一個組別列 → ([(rank, 單位, [選手,...]), ...], 是否判不出賽制)。"""
+    k = event_arity(group)
+    # 這一列有沒有「單位在上、選手在下」的成對格(k 人就佔 2k 行)
+    paired = any(len(cell_lines(cells_row[j])) == 2 * k
+                 for j, _r in ranks if k and j < len(cells_row))
+    entries, unresolved = [], False
+    for j, rank in ranks:
+        unit, names = "", []
+        if name_row and j < len(name_row) and name_row[j]:
+            unit = join_wrapped(cell_lines(cells_row[j])) \
+                if j < len(cells_row) else ""
+            names = split_names(name_row[j])
+        elif j < len(cells_row):
+            lines = cell_lines(cells_row[j])
+            if len(lines) == 1 and paired:
+                # 成對格的列裡出現單行 → 官方漏填單位,留下來的是選手
+                # (259196 乙組男單並列第五的黃子耀,PDF 上單位格真的是空的)
+                names = split_names(lines[0])
+            elif len(lines) <= 1:
+                unit = join_wrapped(lines)
+            else:
+                joined = join_wrapped(lines)
+                # 首選判準:最後一行是不是「這場比賽出現過的選手」。
+                # 是 → 版面 B(單位+選手同格);不是 → 單位名被折行。
+                # 不能反過來用「接起來是不是已知單位」判斷 —— 官方 PDF 寫
+                # 全稱「臺中市北屯區四維國民小學」,比分只寫「四維國小」,
+                # 對不上,團體組會全數落空(341170/765740/535938 共 22 組)。
+                if lines[-1] in all_players:
+                    unit = join_wrapped(lines[:-1])
+                    names = split_names(lines[-1])
+                elif joined in all_players:
+                    names = split_names(joined)
+                elif all_players:
+                    unit = joined      # 有名單可查卻查無 → 折行的單位名
                 else:
-                    joined = join_wrapped(lines)
-                    # 首選判準:最後一行是不是「這場比賽出現過的選手」。
-                    # 是 → 版面 B(單位+選手同格);不是 → 單位名被折行。
-                    # 不能反過來用「接起來是不是已知單位」判斷 —— 官方 PDF 寫
-                    # 全稱「臺中市北屯區四維國民小學」,比分只寫「四維國小」,
-                    # 對不上,團體組會全數落空(341170/765740/535938 共 22 組)。
-                    if lines[-1] in all_players:
-                        unit = join_wrapped(lines[:-1])
-                        names = split_names(lines[-1])
-                    elif joined in all_players:
-                        names = split_names(joined)
-                    elif all_players:
-                        unit = joined      # 有名單可查卻查無 → 折行的單位名
+                    # 這場完全沒有比分可對照(排名賽/全大運 API 回空)。
+                    # 退而用組別名判斷賽制:單打拿 1 個名字、雙打 2 個、
+                    # 團體 0 個。不硬猜 —— 判不出賽制就交還人工。
+                    if k is None or len(lines) <= k:
+                        # 組別名看不出賽制(「女校長組」「教育行政人員組」)。
+                        # 先當成折行的單位名記著,等整份表看完再決定 ——
+                        # 若整份表沒有任何一組出現選手名,那就是純團體賽事,
+                        # 這些多行儲存格必然是隊名折行(282076 教育盃)。
+                        unresolved = True
+                        unit = joined
+                    elif k == 0:
+                        unit = joined
+                    elif len(lines) == 2 * k:
+                        # 每位選手各帶一個單位(雙打搭檔常分屬兩校):
+                        # 上半是單位、下半是選手。沿用既有寫法用全形斜線並列,
+                        # 整段接起來會黏成「國體大彰師大」這種不存在的單位。
+                        uniq = list(dict.fromkeys(lines[:k]))
+                        unit = "／".join(uniq)
+                        for ln in lines[k:]:
+                            names.extend(split_names(ln))
                     else:
-                        # 這場完全沒有比分可對照(排名賽/全大運 API 回空)。
-                        # 退而用組別名判斷賽制:單打拿 1 個名字、雙打 2 個、
-                        # 團體 0 個。不硬猜 —— 判不出賽制就交還人工。
-                        k = event_arity(group)
-                        if k is None or len(lines) <= k:
-                            # 組別名看不出賽制(「女校長組」「教育行政人員組」)。
-                            # 先當成折行的單位名記著,等整份表看完再決定 ——
-                            # 若整份表沒有任何一組出現選手名,那就是純團體賽事,
-                            # 這些多行儲存格必然是隊名折行(282076 教育盃)。
-                            unresolved = True
-                            unit = joined
-                        elif k == 0:
-                            unit = joined
-                        else:
-                            unit = join_wrapped(lines[:-k])
-                            for ln in lines[-k:]:
-                                names.extend(split_names(ln))
-            if unit in PLACEHOLDER or any(n in PLACEHOLDER for n in names):
-                continue                      # 官方沒填,只留樣板字
-            if not unit and not names:
-                continue                      # 空格/畫斜線 = 從缺
-            entries.append((rank, unit, names))
-        if group and entries:
-            out.append((None if unresolved else group, entries, group))
-        i += 3 if name_row else 2
+                        unit = join_wrapped(lines[:-k])
+                        for ln in lines[-k:]:
+                            names.extend(split_names(ln))
+        if unit in PLACEHOLDER or any(n in PLACEHOLDER for n in names):
+            continue                      # 官方沒填,只留樣板字
+        if not unit and not names:
+            continue                      # 空格/畫斜線 = 從缺
+        entries.append((rank, unit, names))
+    return entries, unresolved
 
 
 def finish_summary(out):
     # 純團體賽事的補救:整份成績表都沒有選手名 → 判不出賽制的那幾組就是隊名折行
     if not any(ns for g, es, _n in out if g is not None for _r, _u, ns in es):
         out = [(g if g is not None else name, es, name) for g, es, name in out]
-    return [(g, es) if g is not None else (None, name) for g, es, name in out]
+    # 同一個組別名出現在兩個表格區塊、名次還撞在一起 → 版面裡有本程式沒讀到的分組標籤
+    # (599190/755276 全大運的「公開組/一般組」寫在表格外面,兩張表的項目欄都寫「男生團體」)。
+    # 真正的並列名次來自**一個**合併表頭格,不會由兩個區塊湊出來,所以名次相交必是漏掉分組。
+    # 硬合併會冒出兩個第一名 —— 交還人工,不猜(寧可留空號讓 verify 報出來)。
+    blocks = defaultdict(list)
+    for g, es, _n in out:
+        if g is not None:
+            blocks[g].append({r for r, _u, _ns in es})
+    collided = {g for g, bs in blocks.items()
+                if any(a & b for i, a in enumerate(bs) for b in bs[i + 1:])}
+    return [(g, es) if g is not None and g not in collided else (None, name)
+            for g, es, name in out]
 
 
 def parse_summary_xlsx(path, all_units=(), all_players=()):
@@ -461,11 +614,29 @@ def process(openid, apply=False, local=None):
 
     if apply and accepted:
         pdf_groups = {r["group"] for r in accepted}
-        kept = [s for s in t.get("standings") or [] if s.get("group") not in pdf_groups]
+        # 舊的 pdf 名次一律清掉再寫,不能只換「這次也解析到的組別」:解析規則修好之後
+        # 組別名常常跟著變(259196 的「男子組單打」→「甲組男子組單打」、788659 的
+        # 「U19」→「U19男子單打」),舊名的錯誤名次會原封不動留著,同一場賽事變成
+        # 兩套並存、選手獲獎翻倍。同一場的 pdf 名次全部來自這支程式解析同一份 PDF,
+        # 所以整批換掉是安全的 —— 人工逐列匯入的賽事在 MANUAL 裡,process() 開頭就
+        # 回掉了,走不到這裡。
+        kept = [s for s in t.get("standings") or []
+                if s.get("source") != "pdf" and s.get("group") not in pdf_groups]
         t["standings"] = sorted(kept + accepted, key=lambda s: (s["group"], s["rank"]))
-        existing = {g.get("name") for g in t.get("groups") or []}
+        # 上一輪用舊組別名補進來的空殼組別要清掉,否則前端會多出幾個什麼都沒有的組
+        # (259196 的「男子組單打」、788659 的「U19」)。只清本程式自己補的那種
+        # ——id 空、沒有 tags 也沒有籤表連結,而且比分/名次/參賽名單都查無;
+        # API 帶回來的組別即使這份 PDF 沒收錄也一律保留。
+        alive = ({base_group(m.get("groupName", "")) for m in t.get("matches") or []}
+                 | {m.get("groupName") for m in t.get("matches") or []}
+                 | {s.get("group") for s in t["standings"]}
+                 | {e.get("group") for e in t.get("entries") or []})
+        t["groups"] = [g for g in t.get("groups") or []
+                       if g.get("name") in alive or g.get("id")
+                       or g.get("tags") or g.get("drawUrl")]
+        existing = {g.get("name") for g in t["groups"]}
         for g in sorted(pdf_groups - existing):
-            t.setdefault("groups", []).append(
+            t["groups"].append(
                 {"id": "", "name": g, "tags": [], "drawUrl": None})
         path.write_text(json.dumps(t, ensure_ascii=False, separators=(",", ":")),
                         encoding="utf-8")
