@@ -235,6 +235,20 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
     只對重抓後的資料生效,LAPGO 主辦成績總表自己填錯的(lapgo-100 一般男雙同時有第 1、
     第 2 名)只有這層擋得住。同一列 `members[]` 內同名出現兩次(團體賽列出多組配對)也在
     這裡去重。**單位名次不可以 `(單位, 組別)` 去重** —— 同校在同組拿第 1 和第 2 是正常的。
+- **名次列除了 group/rank/unit/members/source,還有四個欄位容易漏**(定義在
+  `import_pdf_standings.build_entry`,任何寫 standings 的程式都要照做):
+  - `memberUnits[]` —— 雙打搭檔分屬兩校時,`unit` 只是**顯示用**的「國體大／彰師大」,
+    `memberUnits` 與 `members` 對齊才是逐位歸屬。`rebuild_index` 靠它把每位選手算給
+    自己的學校;漏掉會把整串當成一個單位建進單位頁(2026-08 實測生出 43 個假單位)。
+    兩人同單位時不寫這個欄位,`unit` 直接放單位名。
+  - `promoted: true` —— 排名賽的晉升甲組標記,`tournament.html` 靠它畫「晉甲」標籤。
+    規則只有一份:`import_pdf_standings.is_promoted`(乙組單打前 4、雙打前 3)。
+  - 賽事層級的 `category`(排名賽/錦標賽/團體賽/全大運/全中運/全運)與 `promotion`
+    (晉升規則說明文字):`index.html` 用 category 畫分類標籤,`tournament.html` 在
+    `category==="排名賽" && promotion` 時顯示晉升規則說明框。
+- 組別命名:官方排名賽 PDF 一律寫「男子組單打」,人工匯入時都整理成「男子單打」。
+  `parse_result_pdf.tidy_group` 只在 `resolve_group` 判定 `"new"`(比分裡沒這組、
+  名字是我們自己取的)時套用,**有比分可對照的組別一律照比分的寫法**。
 - 手動匯入的歷史賽事 openid 格式:`manual-{YYYY}-{slug}`。
 - **「取 N 名」只存在於官方文件,推導永遠猜不到**(2026-08 實測):同一場賽事裡各組取的
   名次數不一樣 —— 257164 新羽盃 11 組中,取 1 名 2 組、取 2 名 4 組、取 4 名(1/2/並列 3)
