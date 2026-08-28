@@ -83,7 +83,9 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
     Python `rebuild_index.shard_of` 與 JS `common.js shardOf` 演算法必須一致)
   - `data/tournaments/{openid}.json` 單場賽事完整資料(含逐場比分與官方文件連結)
   - 官方 PDF **不留底**(使用者決定):documents/regulation.pdf/resultPdf 都是外部 URL
-- `scripts/update_all.py` — **三來源總入口**,依序跑各 scraper 後只重建一次索引;
+- `scripts/update_all.py` — **三來源總入口**,依序跑各 scraper、`fetch_docs`、
+  **`parse_result_pdf --all --apply`**(2026-08 加入:以前不在月更裡,新到的官方成績 PDF
+  要等人想到才手動解)、`dedupe`,最後只重建一次索引;
   任一來源失敗不中斷其他來源(`--only`、`--full`、`--stage-results`)
 - `scripts/sources_common.py` — 跨來源共用:`source_of` / `merge_standings` /
   `write_if_changed` / `city_from_text` / `NON_BADMINTON` 排除規則 / 帶 cookie 的 `Http`
@@ -103,7 +105,9 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
 - `scripts/rederive_standings.py` — 用現有比分重跑 derive_standings(改過推導規則後跑)
 - `scripts/pdf_backfill_list.py` — 列出「有官方 PDF 但名次仍非 pdf」的待補清單
 - `scripts/rebuild_index.py` — 由 tournaments/*.json 重建索引與分片(匯入後必跑)
-- `scripts/verify_data.py` — 資料健檢(連結一致性/索引新鮮度/分片落點/亂碼/缺口),只讀不寫
+- `scripts/verify_data.py` — 資料健檢(連結一致性/索引新鮮度/分片落點/亂碼/缺口),只讀不寫。
+  **`check_pdf_standings` 專查我們自己解析 PDF 的結果**(同組別出現兩個第一名 = 多半把兩個
+  分組讀成同一組),因為 `check_standings` 對 pdf/official 是整組跳過的
 - `inbox/` — 待匯入 PDF 與 tsba 待解析素材暫放(整個目錄 gitignore)
 - `Ref/` — **進版控**的少數官方文件:網路上沒有穩定連結、只能人工取得,而程式又要靠它
   重跑(`parse_result_pdf.LOCAL_SUMMARY`)。這是「官方 PDF 不留底」的唯一例外
@@ -288,7 +292,7 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
 ## 常用指令
 
 ```
-python scripts/update_all.py             # 每月增量更新(三來源 + fetch_docs + 重建索引)
+python scripts/update_all.py             # 每月增量更新(三來源 + fetch_docs + 成績PDF + 去重 + 重建索引)
 python scripts/update_all.py --full      # 全量重抓(對 mylivescore/lapgo 生效)
 python scripts/update_all.py --only lapgo        # 只跑單一來源
 python scripts/scrape.py          # 只跑 mylivescore(--full / --no-index)

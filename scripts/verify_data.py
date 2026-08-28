@@ -253,6 +253,35 @@ def check_standings(tours):
         print(f"[提醒] 其中 {ocr_bad} 個組別來自圖片解析(ocr),建議對照原圖抽查")
 
 
+def check_pdf_standings(tours):
+    """查「我們自己解析官方 PDF」產生的名次(source=pdf)有沒有讀錯版面。
+
+    check_standings 對 pdf/official 是整組跳過的,背後假設是「官方資料一定對」——
+    但風險從來不是官方資料,是**我們的解析**。2026-08 的 259196 排名賽把甲組與乙組
+    讀成同一組,「男子組單打」同時有王子維(甲組冠軍)和蕭順(乙組冠軍)兩個第一名,
+    而當時 update_all 說「更新 15 場」、verify_data 說「錯誤 0」,一路綠燈上線。
+
+    **只查重複的第一名**:名次跳號不能查 —— `[1,2,3,3,5,5,5,5]` 是官方常態並列,
+    實測全庫 939 組都長這樣,查了只會被雜訊淹沒。也不查 official(lapgo 的成績總表
+    API):主辦自己就會給趣味組四個並列第一(lapgo-95 女俠組 [1,1,1,1])。
+    """
+    bad = 0
+    for oid, t in sorted(tours.items()):
+        groups = {}
+        for s in t.get("standings", []):
+            if s.get("source") != "pdf":
+                continue
+            groups.setdefault(s.get("group", ""), []).append(s.get("rank"))
+        for g, ranks in sorted(groups.items()):
+            if ranks.count(1) > 1:
+                bad += 1
+                err(f"{oid} 組別「{g}」的 pdf 名次有 {ranks.count(1)} 個第一名 "
+                    f"{sorted(r for r in ranks if r)} —— 成績總表多半被讀成同一組"
+                    f"(分組標籤寫在表格外面),用 parse_result_pdf.py --openid {oid} 對一下原始 PDF")
+    if not bad:
+        print("[OK] pdf 名次:沒有同組別出現兩個第一名")
+
+
 def check_duplicate_awards(tours):
     """同一場賽事、同一組別,同一位選手拿到兩個名次 → 該選手的獲獎數會被算兩次。
 
@@ -368,6 +397,7 @@ def main():
     check_duplicates(tours)
     check_duplicate_awards(tours)
     check_standings(tours)
+    check_pdf_standings(tours)
 
     if errors:
         print(f"\n== 錯誤({len(errors)})— 修好再部署 ==")

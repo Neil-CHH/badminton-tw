@@ -525,29 +525,11 @@ LOCAL_SUMMARY = {
 
 MANUAL = manual_openids()
 
-try:
-    # 晉升甲組的規則只留一份(排名賽:乙組單打前 4、乙組雙打前 3),
-    # 前端 tournament.html 靠這個旗標畫「晉甲」標籤。
-    from import_pdf_standings import is_promoted     # noqa: E402
-except Exception:                                    # noqa: BLE001
-    def is_promoted(category, group, rank):
-        return False
-
-
-def unit_fields(unit):
-    """單位欄 → (顯示用單位, memberUnits 或 None)。
-
-    雙打搭檔分屬兩校時 unit 是「每位選手各自單位」的序列;寫法與
-    import_pdf_standings.build_entry 一致 —— `unit` 用全形斜線併起來給人看,
-    `memberUnits` 與 members 對齊供 rebuild_index 逐位歸屬。少了 memberUnits,
-    索引會把「國體大／彰師大」整串當成一個單位建進單位頁(實測會生出 43 個假單位)。
-    """
-    if isinstance(unit, (tuple, list)):
-        uniq = list(dict.fromkeys(unit))
-        if len(uniq) == 1:
-            return uniq[0], None
-        return "／".join(uniq), list(unit)
-    return unit, None
+# 名次列的欄位定義只留一份 —— 自動匯入(本程式)與人工匯入(import_pdf_standings)
+# 各寫一份的下場:2026-08 自動這邊漏了 memberUnits 與 promoted,生出 43 個不存在的
+# 單位、晉甲標籤畫不出來,而所有檢查都說沒問題。這裡故意不包 try/except:
+# build_entry 匯入失敗就讓程式直接掛掉,不要靜默地少寫欄位。
+from import_pdf_standings import build_entry         # noqa: E402
 
 
 def process(openid, apply=False, local=None):
@@ -632,14 +614,9 @@ def process(openid, apply=False, local=None):
                     fixed = next(iter(units))
             if fixed != unit:
                 fixes += 1
-            disp, munits = unit_fields(fixed)
-            row = {"group": g, "rank": rank, "unit": disp,
-                   "members": names, "source": "pdf"}
-            if munits:
-                row["memberUnits"] = munits
-            if is_promoted(t.get("category"), g, rank):
-                row["promoted"] = True
-            rows.append(row)
+            # unit 可能是字串,也可能是「每位選手各自單位」的序列(雙打搭檔分屬兩校);
+            # build_entry 負責轉成 unit(顯示用)+ memberUnits(逐位歸屬)並蓋上晉甲旗標。
+            rows.append(build_entry(t.get("category"), g, rank, fixed, names))
         # 名字大半對不上,只有在「組別是模糊配對來的」時才代表配錯 → 整組不收。
         # 組名完全相同就是同一組,名字對不上只表示該組比分收得不全(官方 PDF 才是全的),
         # 這時照收 PDF,否則會白白丟掉正確的名次。

@@ -61,6 +61,15 @@ def main():
         ok, dt = run("fetch_docs.py", [], "官方文件連結 (fetch_docs)")
         results.append(("fetch_docs", ok, dt))
 
+        # 官方總成績 PDF → 名次。fetch_docs 只是把 PDF 連結收進 documents,
+        # 不解析就等於「答案掛在那裡沒人看」——名次會一直是推導的,而「該賽事取幾名」
+        # 推導永遠猜不到。2026-08 查出積了 22 場、596 筆沒補,就是因為這步以前
+        # 不在月更裡、要等人想到才手動跑。
+        # 增量:名次已全是 pdf 的賽事會自己跳過;解不動的組別只會列出來交還人工。
+        ok, dt = run("parse_result_pdf.py", ["--all", "--apply"],
+                     "官方成績 PDF → 名次 (parse_result_pdf)")
+        results.append(("官方成績PDF", ok, dt))
+
     if "--stage-results" in argv:
         ok, dt = run("scrape_tsba.py", ["--stage-results"], "tsba 成績圖/名冊備料")
         results.append(("stage-results", ok, dt))
