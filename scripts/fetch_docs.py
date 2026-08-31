@@ -83,9 +83,14 @@ def classify(title, link):
 def sync_links(t):
     """由 documents 同步 regulation.pdf 與 resultPdf,回傳是否有變動。
 
-    documents 由 API 依日期新→舊排序,故各類型取第一份即最新。既有值若仍在 documents
-    中就保留(同賽事可能有多份規程,如學生組/成人組,人工挑過的不要蓋掉);官方換新版
-    導致舊 URL 消失時才改指最新一份。
+    規程:既有值若仍在 documents 中就保留(同賽事可能有多份規程,如學生組/成人組,
+    人工挑過的不要蓋掉);官方換新版導致舊 URL 消失時才改指最新一份。
+
+    成績:**一律跟最新那份**。主辦常在賽後隔天補上完整的「總成績紀錄」,而舊的
+    「成績紀錄MMDD」還留在 documents 裡,只在「舊 URL 消失」時才換就會一直指著
+    不完整的舊版(804724 府城群岳盃暑期場:舊版只有 18 組)。parse_result_pdf 讀的
+    是 documents 裡第一份符合關鍵字的,本來就已經是最新版,兩邊這樣才一致。
+    別的 scraper 補進來的官方頁面(帶 source 標記)不是 PDF,不列入候選。
     """
     docs = t.get("documents") or []
     cur_urls = {d["url"] for d in docs}
@@ -102,9 +107,11 @@ def sync_links(t):
             t["regulation"]["pdf"] = reg_urls[0]
             changed = True
 
-    res_urls = [d["url"] for d in docs if d["type"] == "成績"]
-    if res_urls and t.get("resultPdf") not in cur_urls:
-        t["resultPdf"] = res_urls[0]
+    # 日期相同時保持 API 原順序(新→舊),故用 stable sort 只按日期遞減重排
+    res = sorted((d for d in docs if d["type"] == "成績" and not d.get("source")),
+                 key=lambda d: d.get("date") or "", reverse=True)
+    if res and t.get("resultPdf") != res[0]["url"]:
+        t["resultPdf"] = res[0]["url"]
         changed = True
 
     return changed
