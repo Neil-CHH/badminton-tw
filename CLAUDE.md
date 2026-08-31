@@ -364,4 +364,6 @@ python -m http.server 8765 -d docs   # 本地預覽
 - 增量規則(2026-08 調整):scrape 抓回的內容若與現有檔案相同(除 lastUpdated)就不寫檔,
   故「更新 N」是真實變動數;「已結束但無比分」的賽事每月重試,但**名次已由 PDF 補齊者
   不再重試**,需要時用 `--full`。fetch_docs 對結束 60 天內的賽事仍重查,以追上官方換版的
-  總成績紀錄;`regulation.pdf`/`resultPdf` 由 `sync_links()` 保持指向 documents 中的最新一份。
+  總成績紀錄;`sync_links()` 讓 `resultPdf` **一律跟 documents 中最新的成績文件**
+  (主辦常在賽後隔天補完整版,舊的「成績紀錄MMDD」還留著,不跟就一直指著不完整的舊版),
+  `regulation.pdf` 則是既有值仍在 documents 裡就保留(同賽事可能有學生組/成人組多份)。
