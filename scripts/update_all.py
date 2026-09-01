@@ -70,6 +70,15 @@ def main():
                      "官方成績 PDF → 名次 (parse_result_pdf)")
         results.append(("官方成績PDF", ok, dt))
 
+        # 官方報名結果 PDF → 參賽名單。賽事在「抽籤完、還沒打完」那段期間 API 既沒有
+        # 比分也沒有名次,整場一位選手都查不到,但報名名單早就掛在 documents 裡了
+        # (264311 羽霸盃 755 人)。目標是「沒比分沒名次卻有報名結果 PDF」的賽事,
+        # 寫成條件而不是清單,新到這個狀態的賽事每個月會自己被接住。
+        # 要在 dedupe 之前(dominates 會看 entries)、rebuild_index 之前("e":1 是那時算的)。
+        ok, dt = run("parse_entry_pdf.py", ["--all", "--apply"],
+                     "官方報名 PDF → 參賽名單 (parse_entry_pdf)")
+        results.append(("官方報名PDF", ok, dt))
+
     if "--stage-results" in argv:
         ok, dt = run("scrape_tsba.py", ["--stage-results"], "tsba 成績圖/名冊備料")
         results.append(("stage-results", ok, dt))

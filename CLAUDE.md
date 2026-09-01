@@ -31,9 +31,21 @@
 "entries": [{"group":"U11男單","unit":"北市民權","members":["王綨褘"],"source":"draw"}]
 ```
 
-`source`:`draw`(賽程表籤表)。另有 `entriesCoverage`(對照籤表標題宣告人數的覆蓋率)。
+`source`:`draw`(賽程表籤表,tsba/sportgov)、`signup`(官方報名結果總表,mylivescore)。
+另有 `entriesCoverage`(對照官方文件自己宣告的人數/組數的覆蓋率)。
 `rebuild_index` 只登錄出賽事實、不動勝負;該選手在該賽事既無比分也無名次時,
-分片紀錄加 `"e": 1`,前端顯示「僅參賽」。目前只有 tsba 有資料,欄位本身是通用的。
+分片紀錄加 `"e": 1`,前端顯示「僅參賽」。
+
+**「抽籤完就要查得到人」(2026-09 加)**:賽事在抽籤後、比分上線前,API 既沒有比分也
+沒有名次,整場一位選手都查不到 —— 但官方報名結果 PDF 早就掛在 `documents[]` 裡了
+(264311 羽霸盃 755 人躺了一個月)。`parse_entry_pdf.py` 補上這條,目標寫成**條件**
+而不是 openid 清單:「沒比分、沒名次、卻有報名結果 PDF」,新到這個狀態的賽事每個月
+會自己被接住。比分上線後該場退出目標集合,但已寫入的 entries 保留(那仍是「誰報了名」
+的事實,讓報名了卻沒出賽的人繼續查得到)。
+
+⚠️ **`scrape.py` 的 record 必須把 `entries`/`entriesCoverage` 從 existing 帶過去** ——
+那兩個欄位是 PDF 解析來的、API 沒有,不帶就會每月重抓洗掉、再解析一次,無限循環
+(目標賽事多半是進行中,每月都重抓)。
 
 **跨來源去重**:同一場真實賽事會被兩個平台各收一次(實測 9 場 mylivescore × lapgo)。
 `rebuild_index` 以 openid 為唯一鍵逐檔累加,不去重就會出現兩張卡、選手/單位的場次與
@@ -85,7 +97,8 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
   - 官方 PDF **不留底**(使用者決定):documents/regulation.pdf/resultPdf 都是外部 URL
 - `scripts/update_all.py` — **三來源總入口**,依序跑各 scraper、`fetch_docs`、
   **`parse_result_pdf --all --apply`**(2026-08 加入:以前不在月更裡,新到的官方成績 PDF
-  要等人想到才手動解)、`dedupe`,最後只重建一次索引;
+  要等人想到才手動解)、**`parse_entry_pdf --all --apply`**(2026-09 加入,同一個道理:
+  報名名單掛在 documents 裡沒人讀)、`dedupe`,最後只重建一次索引;
   任一來源失敗不中斷其他來源(`--only`、`--full`、`--stage-results`)
 - `scripts/sources_common.py` — 跨來源共用:`source_of` / `merge_standings` /
   `write_if_changed` / `city_from_text` / `NON_BADMINTON` 排除規則 / 帶 cookie 的 `Http`
@@ -102,12 +115,24 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
   自動解析成績總表(mylivescore 的 PDF 是可抽文字的向量表格,不必視覺判讀);
   成績總表不在 mylivescore、只能人工取得的少數賽事登錄在 `LOCAL_SUMMARY` → 讀 `Ref/`
   的本地檔(pdf 或 xlsx 版面完全一樣,共用同一支 `scan_table`)
+- `scripts/parse_entry_pdf.py` — **官方報名結果 PDF → entries(source=signup)**。
+  報名結果 PDF **沒有格線**,`find_tables()` 回 0 張表(成績總表才有格線)→ 改用
+  `get_text("words")` 的座標:依 y 併列(容差 3pt,不能用固定格線,組別標頭與「共N組」
+  常差 0.5pt)、依**相鄰表頭起點的中點**切欄(不能用「表頭起點以右」:儲存格置中排版,
+  文字比表頭寬時起點會跑到表頭左邊,704036 團體分頁 66 隊因此整批消失)。
+  表頭有 44 種寫法但欄名自我描述,一律照欄名判角色、不寫死順序;**同一份 PDF 可以有
+  兩種表頭**(704036 前 7 頁個人、第 8 頁團體),表頭要逐列跟著換。
+  **`領隊`/`管理`/`管理員`/`教練N` 欄裡是真人名但不是選手**,收進去會讓幹部多出參賽紀錄。
+  守門:以 PDF 自己宣告的「共N組」為分母,抽到/宣告 不在 `[0.9, 1.1]` 就只報告不寫檔
 - `scripts/rederive_standings.py` — 用現有比分重跑 derive_standings(改過推導規則後跑)
 - `scripts/pdf_backfill_list.py` — 列出「有官方 PDF 但名次仍非 pdf」的待補清單
 - `scripts/rebuild_index.py` — 由 tournaments/*.json 重建索引與分片(匯入後必跑)
 - `scripts/verify_data.py` — 資料健檢(連結一致性/索引新鮮度/分片落點/亂碼/缺口),只讀不寫。
   **`check_pdf_standings` 專查我們自己解析 PDF 的結果**(同組別出現兩個第一名 = 多半把兩個
-  分組讀成同一組),因為 `check_standings` 對 pdf/official 是整組跳過的
+  分組讀成同一組),因為 `check_standings` 對 pdf/official 是整組跳過的。
+  **`check_entry_gaps` 專查「名冊掛在 documents 裡卻沒解析」**(2026-09 加)——
+  以前這種漏法是靜默的:官方掛上報名結果 PDF、沒人去讀,那場就一直零位選手可查。
+  warn 級不擋部署(lapgo/tsba 有些場次是真的拿不到)
 - `inbox/` — 待匯入 PDF 與 tsba 待解析素材暫放(整個目錄 gitignore)
 - `Ref/` — **進版控**的少數官方文件:網路上沒有穩定連結、只能人工取得,而程式又要靠它
   重跑(`parse_result_pdf.LOCAL_SUMMARY`)。這是「官方 PDF 不留底」的唯一例外
@@ -148,6 +173,10 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
   真正的組別是 `session_group_id`,組別名取同 sgid 底下所有 name 的共同前綴。
 - 比分與成績總表的**組別名寫法不一致**(`U10女單` vs `U10歲組女單`),
   `align_groups()` 做一對一貪婪配對;不強制一對一會把多組併成一組。
+- **沒有公開的報名名單端點**(2026-09 查證,不必再找):`js/web.js` 全部 33 個端點裡
+  `getSessionGroup` 只回組別定義(費用、人數上下限),報名資料在 `searchOrder`/`makeOrder`
+  那條訂單流程後面,不對外。所以 lapgo 那 17 場「查不到任何選手」的賽事沒有
+  `parse_entry_pdf` 這種救法,只能等官方公布文件。
 - 網站改版時:抓賽事頁的 `js/web.js`,搜 `url:` 看端點;成績總表在 `js/resultsSummary.js`。
 
 ## tsbadminton.url.tw(2026-08 偵察,以 scrape_tsba.py 為準)
@@ -310,6 +339,9 @@ python scripts/dedupe.py --merge 630550 628963   # 先併名次再刪 shadow(人
 python scripts/parse_result_pdf.py --openid X          # 解析官方總成績 PDF(只看報告)
 python scripts/parse_result_pdf.py --openid X --file Ref/成績總表.xlsx --apply  # 讀本地檔
 python scripts/parse_result_pdf.py --all --apply       # 全庫套用(--force 連已是 pdf 的也重跑)
+python scripts/parse_entry_pdf.py --all                # 官方報名結果 PDF → 參賽名單(只看報告)
+python scripts/parse_entry_pdf.py --all --apply        # 套用(--force 連已有比分的也解析)
+python scripts/parse_entry_pdf.py --openid 264311 --apply   # 單場補參賽名單
 python scripts/pdf_backfill_list.py                    # 待補 PDF 清單
 python scripts/rederive_standings.py --apply           # 改過推導規則後重推(不連網)
 python scripts/rebuild_index.py   # 重建索引(匯入後)

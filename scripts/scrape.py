@@ -326,6 +326,12 @@ def scrape_tournament(api, info, status_key, existing):
         "documents": (existing or {}).get("documents"),  # 官方文件連結由 fetch_docs 維護,重抓時保留
         "lastUpdated": date.today().isoformat(),
     }
+    # 參賽名單由 parse_entry_pdf 從官方報名結果 PDF 解析而來,API 沒有這個東西 ——
+    # 不在這裡帶過去,每個月重抓就會把它整批洗掉,下個月再解析一次,如此反覆。
+    # 目標賽事多半是 status=2(進行中),每月都會重抓,所以這一行是必要的。
+    for k in ("entries", "entriesCoverage"):
+        if (existing or {}).get(k) is not None:
+            record[k] = existing[k]
 
     groups, schedule = [], []
     # 不論 isSystem,已結束/進行中賽事都試抓 items/matches。實測許多 isSystem=False

@@ -11,6 +11,7 @@
   [提醒] 來源資料本身的問題或已知缺口 → 不影響 exit code,照抄進月報即可
 """
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -311,6 +312,47 @@ def check_duplicate_awards(tours):
         print("[OK] 名次去重:沒有同組別、同選手拿到兩個不同名次的情形")
 
 
+_ROSTER_DOC = re.compile(r"報名結果|抽籤結果|秩序冊|籤表")
+
+
+def check_entry_gaps(tours):
+    """查不到任何參賽者的賽事,以及「名冊掛在那裡卻沒解析」的賽事。
+
+    這是「文件一進來就要查得到人」的守門。以前的漏法是靜默的:官方把報名結果 PDF
+    掛進 documents,沒有人去讀,那場賽事就一直是零位選手可查(實測 264311 羽霸盃
+    755 人躺了一整個月)。列出來才不用靠人記得。
+
+    warn 級不擋部署 —— lapgo 沒有公開的報名名單端點、tsba 早年只有成績圖,
+    那些場次是真的拿不到資料,不該讓健檢一直紅著。
+    """
+    blind, unparsed = [], []
+    for oid, t in sorted(tours.items()):
+        if not (t.get("matches") or t.get("standings") or t.get("entries")):
+            blind.append((oid, t))
+        if t.get("entries") or t.get("matches"):
+            continue
+        docs = [d for d in t.get("documents") or []
+                if _ROSTER_DOC.search(d.get("title") or "")]
+        if docs:
+            # parse_entry_pdf 只吃「報名結果」PDF 直連。籤表樹、秩序冊、以及別的
+            # scraper 補進來的官方消息頁(255139 的資格賽籤表)都要另外處理,
+            # 給錯指令只會讓人跑一次空包彈
+            auto = any("報名結果" in (d.get("title") or "")
+                       and (d.get("url") or "").lower().endswith(".pdf") for d in docs)
+            unparsed.append((oid, t, auto, docs[0].get("title") or ""))
+    if blind:
+        warn(f"{len(blind)} 場賽事查不到任何選手(無比分、無名次、無參賽名單):"
+             + "、".join(oid for oid, _ in blind[:6])
+             + ("…" if len(blind) > 6 else ""))
+    for oid, t, auto, title in unparsed:
+        how = (f"跑 python scripts/parse_entry_pdf.py --openid {oid} --apply" if auto
+               else "不是報名結果 PDF,需人工判讀或另寫解析")
+        warn(f"{oid}「{(t.get('name') or '')[:20]}」有名冊文件「{title[:26]}」"
+             f"卻沒有參賽名單 —— {how}")
+    if not blind and not unparsed:
+        print("[OK] 參賽名單:沒有「名冊掛著沒解析」的賽事")
+
+
 def report_entries(tours):
     """參賽名單的收錄狀況。名單讓沒得名的選手也查得到,覆蓋率偏低要留意。"""
     rows = [(oid, t) for oid, t in sorted(tours.items()) if t.get("entries")]
@@ -398,6 +440,7 @@ def main():
     check_duplicate_awards(tours)
     check_standings(tours)
     check_pdf_standings(tours)
+    check_entry_gaps(tours)
 
     if errors:
         print(f"\n== 錯誤({len(errors)})— 修好再部署 ==")

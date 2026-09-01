@@ -186,8 +186,13 @@ function render() {
           people.map(([nm, u]) => `<a class="chip" href="./player.html?name=${encodeURIComponent(nm)}"
             title="${esc(u)}">${esc(nm)}</a>`).join("") + `</div></details>`;
       }).join("") +
-      `<div class="note" style="margin-bottom:0">名單取自官方賽程表(籤表),用於讓未得名的選手也查得到。
-        籤表為賽前版本,可能不含補報名、且含後來棄權者${
+      `<div class="note" style="margin-bottom:0">${(() => {
+          const srcs = new Set(entries.map(e => e.source || "draw"));
+          const parts = [];
+          if (srcs.has("draw")) parts.push("官方賽程表(籤表)");
+          if (srcs.has("signup")) parts.push("官方報名結果總表");
+          return "名單取自" + parts.join("與");
+        })()},用於讓未得名的選手也查得到。名單為賽前版本,可能不含補報名、且含後來棄權者${
           cov != null && cov < 0.98 ? `;本賽事約收錄官方公告人數的 ${Math.round(cov * 100)}%` : ""
         }。</div></div></div>`;
   }
