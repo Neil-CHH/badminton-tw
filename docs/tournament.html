@@ -23,6 +23,10 @@
 <script>
 const oid = qs("id");
 const PAGE = 150;
+/* 參賽名單超過這個人次就預設收起。目前庫裡 16 場有名單的賽事最少也有 378 人次
+   (285271 竹南鎮長盃),所以實務上全部都是收起的;門檻留著是為了將來真的很小的
+   名單不要被沒必要地藏起來 —— 那種攤開也才十幾列,收起反而讓頁面看起來是空的。 */
+const ENTRY_FOLD = 300;
 let T = null, shown = PAGE;
 
 function matchSideHTML(m, side, isWinner) {
@@ -87,7 +91,7 @@ function render() {
     onerror="this.parentElement.style.display='none'"></div>`;
 
   html += `<div class="card"><div class="pad">
-    ${statusBadge(T.status)} <span class="chip off">${esc(T.city)}</span>
+    ${statusBadge(effectiveStatus(T))} <span class="chip off">${esc(T.city)}</span>
     ${T.category ? `<span class="chip cat">${esc(T.category)}</span>` : ""}
     <span class="chip src">${esc(sourceLabel(T))}</span>
     <div class="kv" style="margin-top:10px">
@@ -98,7 +102,7 @@ function render() {
     <div style="margin-top:10px">
       ${officialUrl(T) ? `<a class="btn-link" target="_blank" rel="noopener"
          href="${esc(officialUrl(T))}">🔗 官方賽事查詢</a>` : ""}
-      ${T.status === "registering" && sourceOf(T) === "mylivescore" ? `<a class="btn-link" target="_blank" rel="noopener"
+      ${effectiveStatus(T) === "registering" && sourceOf(T) === "mylivescore" ? `<a class="btn-link" target="_blank" rel="noopener"
          href="https://ef-regist.com/chkagreement/agreement.php?id=${encodeURIComponent(T.openid)}">📝 線上報名</a>` : ""}
     </div>
   </div></div>`;
@@ -177,8 +181,15 @@ function render() {
     });
     const gs = [...byGroup.keys()].sort((a, b) => a.localeCompare(b, "zh-Hant"));
     const cov = T.entriesCoverage;
-    html += `<h2 class="sec">👥 參賽名單 <small>(${gs.length} 組・${entries.length} 人次)</small></h2>
-      <div class="card"><div class="pad">` +
+    // 名單動輒上千人次(豐原主委盃 52 組 1105 人次、tsba 清晨盃 7847 人次),攤開會把
+    // 底下的組別與逐場比分整個推到看不見的地方 → 整段做成可收合,長名單預設收起。
+    // 這純粹是顯示層的收合:search-index 由 rebuild_index 直接從賽事 JSON 建,
+    // 跟這裡畫不畫、開不開完全無關,搜尋照樣找得到人。
+    const folded = entries.length > ENTRY_FOLD;
+    html += `<details class="card entries-sec"${folded ? "" : " open"}>
+      <summary><span>👥 參賽名單</span>
+        <small>${gs.length} 組・${entries.length} 人次</small></summary>
+      <div class="pad">` +
       gs.map(g => {
         const people = byGroup.get(g);
         return `<details class="entry-grp"><summary>${esc(g)} <small>(${people.length})</small></summary>
@@ -194,7 +205,7 @@ function render() {
           return "名單取自" + parts.join("與");
         })()},用於讓未得名的選手也查得到。名單為賽前版本,可能不含補報名、且含後來棄權者${
           cov != null && cov < 0.98 ? `;本賽事約收錄官方公告人數的 ${Math.round(cov * 100)}%` : ""
-        }。</div></div></div>`;
+        }。</div></div></details>`;
   }
 
   const groups = T.groups || [];
@@ -218,7 +229,7 @@ function render() {
       </div>
       <div class="card" id="mlist"></div>
       <button class="btn-more" id="m-more" style="display:none"></button>`;
-  } else if (T.status !== "registering") {
+  } else if (!notStarted(T) && effectiveStatus(T) !== "registering") {
     html += `<div class="note">此賽事未使用線上計分系統,無逐場比分資料。</div>`;
   }
 

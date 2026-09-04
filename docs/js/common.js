@@ -54,6 +54,41 @@ function effectiveDates(t) {
   return (ds <= real[1] && real[0] <= end) ? [ds, end] : real;
 }
 
+/* 賽事狀態改由日期即時判定,不直接用資料裡的 status —— 兩個理由:
+
+   1. **兩個來源對「進行中」的定義不一樣**。mylivescore 的 M_Status=2 實際語意是
+      「報名截止、賽務進行中」(抽籤/編排),不是「正在打球」:實測 13 場標 ongoing 的
+      賽事全都還沒開賽,報名截止日則全部已過(726019 報名 8/31 截止、12/20 才開打)。
+      LAPGO 沒有可用的 status(全是 'normal'),scrape_lapgo.derive_status() 只看比賽
+      日期、不看報名截止,於是報名截止後仍留在「報名中」—— 卡片會同時出現「報名中」
+      徽章與「報名已截止」提示,自相矛盾。這裡統一採 mylivescore 的語意。
+   2. **status 是抓取當下的快照**,寫死在 JSON 裡。月更之間會過期:一場今天開打的
+      賽事,要等下次跑爬蟲才會換狀態。改成前端當場算就永遠是對的。
+
+   與 effective_dates 同一個原則:賽事 JSON 本體不改寫(保持來源忠實),只在顯示時套規則。 */
+function todayISO() {
+  const d = new Date();   // 用本地時區,不能用 toISOString()(UTC 會差一天)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function effectiveStatus(t) {
+  const [ds, de] = effectiveDates(t);
+  const end = de || ds;
+  // 完全沒有日期可判(tsba 早年賽事缺 dateStart)→ 只能照抄原值,不要亂猜成「報名中」
+  if (!ds && !end) return t.status || "finished";
+  const today = todayISO();
+  if (end && today > end) return "finished";
+  if (ds && today >= ds) return "ongoing";
+  const re = t.registerEnd;
+  if (re && !BAD_DATES.has(re) && today > re) return "ongoing";
+  return "registering";
+}
+/* 「報名截止但還沒開賽」——effectiveStatus 會算成 ongoing(對齊 mylivescore),
+   但頁面上有些文案只對「真的開打了」成立,要靠這個分辨。 */
+function notStarted(t) {
+  const [ds] = effectiveDates(t);
+  return !!ds && todayISO() < ds;
+}
+
 const STATUS_LABEL = { registering: "報名中", ongoing: "進行中", finished: "已結束" };
 function statusBadge(st) {
   const label = STATUS_LABEL[st] || st;

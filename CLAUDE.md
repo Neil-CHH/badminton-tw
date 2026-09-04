@@ -32,6 +32,10 @@
 ```
 
 `source`:`draw`(賽程表籤表,tsba/sportgov)、`signup`(官方報名結果總表,mylivescore)。
+名單動輒上千人次(267404 豐原主委盃 52 組 1105 人次、tsba-2026-清晨盃 7847 人次),
+`tournament.html` 把整段做成可收合的 `details.entries-sec`,超過 `ENTRY_FOLD`(300 人次)
+預設收起,否則底下的競賽組別與逐場比分會被推到看不見的地方。**這純粹是顯示層的收合,
+不影響搜尋** —— search-index 由 `rebuild_index` 直接從賽事 JSON 建,跟前端畫不畫無關。
 另有 `entriesCoverage`(對照官方文件自己宣告的人數/組數的覆蓋率)。
 `rebuild_index` 只登錄出賽事實、不動勝負;該選手在該賽事既無比分也無名次時,
 分片紀錄加 `"e": 1`,前端顯示「僅參賽」。
@@ -357,6 +361,20 @@ python -m http.server 8765 -d docs   # 本地預覽
 - **跨語言契約有三個,改一邊就要改另一邊**:`rebuild_index.shard_of` ↔ `common.js shardOf`、
   mylivescore 的 14 個 match key、`sources_common.effective_dates` ↔ `common.js effectiveDates`
   (含 `DATE_OVERRIDES` 那張表)。
+- **賽事狀態由前端即時判定(2026-09 改)**:`common.js effectiveStatus()`,不直接用資料裡的
+  `status`。兩個來源對「進行中」的定義本來就不同 —— mylivescore 的 `M_Status=2` 實際語意是
+  **「報名截止、賽務進行中」**(抽籤/編排),不是「正在打球」:實測 13 場標 ongoing 的賽事
+  全都還沒開賽,而報名截止日全部已過(726019 報名 8/31 截止、12/20 才開打)。LAPGO 沒有可用
+  的 status(全是 `normal`),`scrape_lapgo.derive_status()` 只看比賽日期、**不看 registerEnd**,
+  於是報名截止後仍留在「報名中」,卡片同時出現「報名中」徽章與「報名已截止」提示而自相矛盾
+  (實測 4 場)。統一採 mylivescore 的語意:`今天>dateEnd`→已結束、`今天>=dateStart`→進行中、
+  `今天>registerEnd`→進行中、否則報名中;**沒有日期可判的照抄原值**(tsba 早年 10 場缺
+  `dateStart`,亂猜會被丟進「報名中」)。另一個好處是 `status` 本來是抓取當下的快照、月更之間
+  會過期,改成當場算就永遠是對的。**賽事 JSON 與爬蟲寫入的 `status` 不動**(同 `effective_dates`
+  的原則:保持來源忠實,只在顯示時套規則)。
+  「報名截止但尚未開賽」的賽事會多一行 `⏳ 報名截止,尚未開賽`,不然使用者會以為球正在打;
+  `tournament.html` 的「未使用線上計分系統」那句也要用 `notStarted()` 擋掉,否則會對著一場
+  下週才開打的賽事說它沒有比分。
 - 賽事日期(2026-08):少數賽事的 `dateStart` 是錯的(整串複製到別場、日期反轉、
   `0000-00-00`),會讓列表排序與年份篩選錯位。`effective_dates` 只在**與實際比分日期完全
   沒有交集時**才改用 `matches[].date` 推得的區間(目前 5 場),「公告 2/28 起、實際 3/1

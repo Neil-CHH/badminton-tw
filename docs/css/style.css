@@ -232,6 +232,9 @@ table.plain td[rowspan] { vertical-align: top; }
 /* 報名截止提醒 */
 .deadline-soon { color: var(--danger); font-weight: 700; }
 .deadline-over { color: var(--text-2); }
+/* 報名截止但還沒開賽 —— 這類賽事狀態算「進行中」(對齊 mylivescore 的語意:
+   賽務進行中),但沒這行提示會讓人以為球已經在打了 */
+.upcoming { color: var(--text-2); }
 
 /* 選手戰績摘要列 */
 .statbar { display: flex; text-align: center; padding: 10px 0; }
@@ -258,6 +261,22 @@ table.plain td[rowspan] { vertical-align: top; }
   body { font-size: 15.5px; }
   .match-card .thumb { width: 120px; }
 }
+
+/* 參賽名單整段可收合,summary 兼作區塊標題(樣式對齊 h2.sec) */
+details.entries-sec > summary {
+  cursor: pointer; user-select: none; list-style: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 11px 14px; font-size: 15px; font-weight: 600; color: var(--primary-dark);
+}
+details.entries-sec > summary::-webkit-details-marker { display: none; }
+details.entries-sec > summary small { font-weight: 400; color: var(--text-2); }
+/* 用箭頭取代預設 marker,收合時朝右、展開時朝下 */
+details.entries-sec > summary::after {
+  content: "▸"; margin-left: auto; color: var(--text-2); font-size: 13px;
+}
+details.entries-sec[open] > summary::after { content: "▾"; }
+details.entries-sec[open] > summary { border-bottom: 1px solid var(--line); }
+details.entries-sec > .pad { padding-top: 10px; }
 
 /* 參賽名單:組別可收合,人多時不會塞爆頁面 */
 details.entry-grp > summary {

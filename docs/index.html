@@ -52,7 +52,7 @@ function applyFilters() {
   const year = document.getElementById("f-year").value;
   const month = document.getElementById("f-month").value;
   const kw = document.getElementById("f-kw").value.trim();
-  let rows = all.filter(t => t.status === status);
+  let rows = all.filter(t => effectiveStatus(t) === status);
   if (city) rows = rows.filter(t => t.city === city);
   if (year) rows = rows.filter(t => (t.dateStart || "").startsWith(year));
   if (month) rows = rows.filter(t => (t.dateStart || "").slice(5, 7) === month);
@@ -61,6 +61,12 @@ function applyFilters() {
   if (status === "registering") {
     rows = [...rows].sort((a, b) =>
       (a.registerEnd || "9999").localeCompare(b.registerEnd || "9999"));
+  }
+  // 進行中:開賽日近的排前面。index.json 預設是日期新到舊,套在這裡會把 12 月才開打的
+  // 賽事排到正在打的那場前面 —— 這一頁要的是「現在/馬上」,不是「最新」。
+  if (status === "ongoing") {
+    rows = [...rows].sort((a, b) =>
+      (effectiveDates(a)[0] || "9999").localeCompare(effectiveDates(b)[0] || "9999"));
   }
   render(rows);
 }
@@ -84,14 +90,16 @@ function render(rows) {
              onerror="this.style.visibility='hidden'">`
         : `<div class="thumb"></div>`}
       <div class="info">
-        ${statusBadge(t.status)} <span class="chip off">${esc(t.city)}</span>
+        ${statusBadge(effectiveStatus(t))} <span class="chip off">${esc(t.city)}</span>
         ${t.category === "排名賽" ? `<span class="chip cat">排名賽</span>` : ""}
         ${sourceOf(t) !== "mylivescore" ? `<span class="chip src">${esc(sourceLabel(t))}</span>` : ""}
         <div class="name">${esc(t.name)}</div>
         <div class="meta">
           <span>📅 ${fmtRange(t.dateStart, t.dateEnd)}</span>
           <span>📍 ${esc(t.venue || "—")}</span>
-          ${t.status === "registering" ? deadlineHTML(t) : ""}
+          ${effectiveStatus(t) === "registering" ? deadlineHTML(t) : ""}
+          ${effectiveStatus(t) === "ongoing" && notStarted(t)
+            ? `<span class="upcoming">⏳ 報名截止,尚未開賽</span>` : ""}
           ${t.hasMatches ? `<span>✅ 含比分紀錄</span>` : ""}
         </div>
       </div>
@@ -130,7 +138,7 @@ async function init() {
   const st = p.get("st");
   if (["registering", "ongoing", "finished"].includes(st)) {
     document.querySelector(`#tabs button[data-st="${st}"]`).click();
-  } else if (all.some(t => t.status === "ongoing")) {
+  } else if (all.some(t => effectiveStatus(t) === "ongoing")) {
     // 預設停在資料最多的「已結束」;若有進行中賽事則優先顯示
     document.querySelector('#tabs button[data-st="ongoing"]').click();
   } else {
