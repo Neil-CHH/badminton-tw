@@ -102,12 +102,15 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
 - `scripts/update_all.py` — **三來源總入口**,依序跑各 scraper、`fetch_docs`、
   **`parse_result_pdf --all --apply`**(2026-08 加入:以前不在月更裡,新到的官方成績 PDF
   要等人想到才手動解)、**`parse_entry_pdf --all --apply`**(2026-09 加入,同一個道理:
-  報名名單掛在 documents 裡沒人讀)、`dedupe`,最後只重建一次索引;
+  名單掛在 documents 裡沒人讀。**這一步不歸在 mylivescore 底下** —— 名單有兩個來源
+  (mylivescore 的「報名結果」、LAPGO 公告的「選手名單」),而且它本來就掃全庫,
+  `--only lapgo` 時同樣要跑)、`dedupe`,最後只重建一次索引;
   任一來源失敗不中斷其他來源(`--only`、`--full`、`--stage-results`)
 - `scripts/sources_common.py` — 跨來源共用:`source_of` / `merge_standings` /
   `write_if_changed` / `city_from_text` / `NON_BADMINTON` 排除規則 / 帶 cookie 的 `Http`
 - `scripts/scrape.py` — mylivescore:API 抓取+組別標籤+名次推導(`--full`、`--no-index`)
 - `scripts/scrape_lapgo.py` — lapgo:比分正規化 + 官方成績總表 → standings
+  + **賽事公告(最新消息)→ documents**(2026-09 加,選手名單就在那裡)
 - `scripts/scrape_tsba.py` — tsba:文件清單 +(`--stage-results`)備妥成績圖與名冊
 - `scripts/scrape_sportgov.py` — 全運會/全中運官方競賽資訊系統 → 逐場比分 + 官方頒獎名單
   (`official`);資格賽只有籤表 PDF,收 `entries[]`。**不在 update_all 裡**,新一屆才手動跑
@@ -119,7 +122,17 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
   自動解析成績總表(mylivescore 的 PDF 是可抽文字的向量表格,不必視覺判讀);
   成績總表不在 mylivescore、只能人工取得的少數賽事登錄在 `LOCAL_SUMMARY` → 讀 `Ref/`
   的本地檔(pdf 或 xlsx 版面完全一樣,共用同一支 `scan_table`)
-- `scripts/parse_entry_pdf.py` — **官方報名結果 PDF → entries(source=signup)**。
+- `scripts/parse_entry_pdf.py` — **官方名單 PDF → entries(source=signup)**,吃兩種版面:
+  mylivescore 的「報名結果」與 **LAPGO 公告裡的「選手名單」**(2026-09 加)。
+  LAPGO 版面是兩欄並排的 `編號｜隊名｜姓名`,組別在表格外的標題列自帶「【共N組】」,
+  三個坑:(a) **編號的組序整場跨檔連號**,社會組那份從 27 起跳,所以組序要依出現順序
+  綁標題、不能當索引;(b) **雙打/團體的編號格垂直置中、自己獨佔一列**,隊名與姓名都在
+  它的上下列 —— 只讀編號那列的隊名會讓團體組隊名全空(lapgo-101 14 隊全中);
+  (c) 續頁不重印表頭也不重印標題,表頭要跨頁沿用,但有表頭那頁的表頭以上是頁首大標,
+  落進姓名欄會冒出假選手。欄名照 `_LAPGO_ROLES` 判角色、不寫死順序(實測三種寫法:
+  `編號｜隊名｜姓名`、`編號｜隊名｜選手`、2024 舊版的 `參加編號｜項目｜隊名(單位)｜姓名`)。
+  **單字的姓名格一律丟掉** —— 罕用字遇字型 fallback 會被排到上一列自成一格
+  (lapgo-128「施珵𧙗」的𧙗)、隊名溢出也會留一個字,收進去就是查得到的假選手。
   報名結果 PDF **沒有格線**,`find_tables()` 回 0 張表(成績總表才有格線)→ 改用
   `get_text("words")` 的座標:依 y 併列(容差 3pt,不能用固定格線,組別標頭與「共N組」
   常差 0.5pt)、依**相鄰表頭起點的中點**切欄(不能用「表頭起點以右」:儲存格置中排版,
@@ -127,7 +140,10 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
   表頭有 44 種寫法但欄名自我描述,一律照欄名判角色、不寫死順序;**同一份 PDF 可以有
   兩種表頭**(704036 前 7 頁個人、第 8 頁團體),表頭要逐列跟著換。
   **`領隊`/`管理`/`管理員`/`教練N` 欄裡是真人名但不是選手**,收進去會讓幹部多出參賽紀錄。
-  守門:以 PDF 自己宣告的「共N組」為分母,抽到/宣告 不在 `[0.9, 1.1]` 就只報告不寫檔
+  守門:以 PDF 自己宣告的「共N組」為分母,抽到/宣告 不在 `[0.9, 1.1]` 就只報告不寫檔。
+  **一場可以有好幾份名單**(LAPGO 常拆成個人組/團體組),`signup_docs()` 對 lapgo 全收、
+  對 mylivescore 只取最新一份(舊版還留在 documents 裡,全解會把退掉的人收回來);
+  下載快取的檔名帶 URL 雜湊,主辦換新版時才不會一直讀到過期的那份
 - `scripts/rederive_standings.py` — 用現有比分重跑 derive_standings(改過推導規則後跑)
 - `scripts/pdf_backfill_list.py` — 列出「有官方 PDF 但名次仍非 pdf」的待補清單
 - `scripts/rebuild_index.py` — 由 tournaments/*.json 重建索引與分片(匯入後必跑)
@@ -135,8 +151,9 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
   **`check_pdf_standings` 專查我們自己解析 PDF 的結果**(同組別出現兩個第一名 = 多半把兩個
   分組讀成同一組),因為 `check_standings` 對 pdf/official 是整組跳過的。
   **`check_entry_gaps` 專查「名冊掛在 documents 裡卻沒解析」**(2026-09 加)——
-  以前這種漏法是靜默的:官方掛上報名結果 PDF、沒人去讀,那場就一直零位選手可查。
-  warn 級不擋部署(lapgo/tsba 有些場次是真的拿不到)
+  以前這種漏法是靜默的:官方掛上名單 PDF、沒人去讀,那場就一直零位選手可查。
+  它同時是「還沒支援的名單版面」的清單(lapgo-19/27 那幾份 2023-2024 的舊版面)。
+  warn 級不擋部署(tsba 早年只有成績圖,那些是真的拿不到)
 - `inbox/` — 待匯入 PDF 與 tsba 待解析素材暫放(整個目錄 gitignore)
 - `Ref/` — **進版控**的少數官方文件:網路上沒有穩定連結、只能人工取得,而程式又要靠它
   重跑(`parse_result_pdf.LOCAL_SUMMARY`)。這是「官方 PDF 不留底」的唯一例外
@@ -177,10 +194,23 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
   真正的組別是 `session_group_id`,組別名取同 sgid 底下所有 name 的共同前綴。
 - 比分與成績總表的**組別名寫法不一致**(`U10女單` vs `U10歲組女單`),
   `align_groups()` 做一對一貪婪配對;不強制一對一會把多組併成一組。
-- **沒有公開的報名名單端點**(2026-09 查證,不必再找):`js/web.js` 全部 33 個端點裡
-  `getSessionGroup` 只回組別定義(費用、人數上下限),報名資料在 `searchOrder`/`makeOrder`
-  那條訂單流程後面,不對外。所以 lapgo 那 17 場「查不到任何選手」的賽事沒有
-  `parse_entry_pdf` 這種救法,只能等官方公布文件。
+- **沒有公開的報名名單「資料」端點**(2026-09 查證,不必再找 API):`js/web.js` 全部 33 個
+  端點裡 `getSessionGroup` 只回組別定義(費用、人數上下限),報名資料在
+  `searchOrder`/`makeOrder` 那條訂單流程後面,不對外。
+- **但名單有公布,只是藏在「最新消息」裡**(2026-09 補,這是上一條漏掉的半邊):
+  `POST /web/getWebContent` body `id={cid}` 回賽事自訂頁面,`type=='news'` 那筆帶
+  `news[]`(id/title/updated_at);**清單只有標題,連結要再打
+  `POST /getNewsContent` body `id={newsId}`**(回傳整份是 URL-encode 過的 HTML)。
+  主辦把**選手名單／抽籤結果／賽程**貼在這裡,檔案掛 Google Drive。實測 62 場有 30 場
+  貼了選手名單,而我們一直沒讀 —— 那些賽事在開打前一位選手都查得不到,答案卻早就公開了
+  (lapgo-128 大佛盃 39 組 1,413 人躺了 6 天)。`scrape_lapgo.news_documents()` 把這些
+  連結寫進 `documents[]`(帶 `source:"lapgo-news"`),`parse_entry_pdf` 再解析成 entries。
+- ⚠️ **賽前公告正好落在舊增量條件會跳過的那一段**:選手名單是在「報名截止、還沒開打」時
+  貼出來的,那段期間 status 不變、比分也還沒有,舊的 `need` 一路判 False,月更根本不會
+  碰到那場。`news_window()`(未結束、或結束未滿 60 天)另外把這些賽事拉回來。
+- Drive 的分享連結要正規化成 `/file/d/{id}/view` 再存(各公告寫法不同的 `?usp=` 尾巴會讓
+  同一份名單在 documents 裡重複),下載時換成 `uc?export=download&id=`(直接抓 `/view`
+  只會拿到一頁 HTML)。
 - 網站改版時:抓賽事頁的 `js/web.js`,搜 `url:` 看端點;成績總表在 `js/resultsSummary.js`。
 
 ## tsbadminton.url.tw(2026-08 偵察,以 scrape_tsba.py 為準)
@@ -343,9 +373,10 @@ python scripts/dedupe.py --merge 630550 628963   # 先併名次再刪 shadow(人
 python scripts/parse_result_pdf.py --openid X          # 解析官方總成績 PDF(只看報告)
 python scripts/parse_result_pdf.py --openid X --file Ref/成績總表.xlsx --apply  # 讀本地檔
 python scripts/parse_result_pdf.py --all --apply       # 全庫套用(--force 連已是 pdf 的也重跑)
-python scripts/parse_entry_pdf.py --all                # 官方報名結果 PDF → 參賽名單(只看報告)
+python scripts/parse_entry_pdf.py --all                # 官方名單 PDF → 參賽名單(只看報告)
 python scripts/parse_entry_pdf.py --all --apply        # 套用(--force 連已有比分的也解析)
-python scripts/parse_entry_pdf.py --openid 264311 --apply   # 單場補參賽名單
+python scripts/parse_entry_pdf.py --openid 264311 --apply       # 單場補參賽名單
+python scripts/parse_entry_pdf.py --openid lapgo-128 --apply    # lapgo 的名單同一支處理
 python scripts/pdf_backfill_list.py                    # 待補 PDF 清單
 python scripts/rederive_standings.py --apply           # 改過推導規則後重推(不連網)
 python scripts/rebuild_index.py   # 重建索引(匯入後)

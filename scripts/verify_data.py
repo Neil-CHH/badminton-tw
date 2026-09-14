@@ -312,7 +312,12 @@ def check_duplicate_awards(tours):
         print("[OK] 名次去重:沒有同組別、同選手拿到兩個不同名次的情形")
 
 
-_ROSTER_DOC = re.compile(r"報名結果|抽籤結果|秩序冊|籤表")
+_ROSTER_DOC = re.compile(r"報名結果|選手名單|參賽名單|抽籤結果|秩序冊|籤表")
+# parse_entry_pdf 能自動解析的:mylivescore 的「報名結果」PDF 直連,以及 LAPGO 公告裡
+# 掛在 Google Drive 的「選手名單」。其餘(籤表樹、秩序冊、別的 scraper 補的官方頁面)
+# 給錯指令只會讓人跑一次空包彈,所以分開判。
+_AUTO_DOC = re.compile(r"報名結果|選手名單")
+_AUTO_URL = re.compile(r"\.pdf$|^https?://drive\.google\.com/file/d/", re.I)
 
 
 def check_entry_gaps(tours):
@@ -322,7 +327,7 @@ def check_entry_gaps(tours):
     掛進 documents,沒有人去讀,那場賽事就一直是零位選手可查(實測 264311 羽霸盃
     755 人躺了一整個月)。列出來才不用靠人記得。
 
-    warn 級不擋部署 —— lapgo 沒有公開的報名名單端點、tsba 早年只有成績圖,
+    warn 級不擋部署 —— tsba 早年只有成績圖、lapgo 早年幾場的名單版面還沒支援,
     那些場次是真的拿不到資料,不該讓健檢一直紅著。
     """
     blind, unparsed = [], []
@@ -334,11 +339,8 @@ def check_entry_gaps(tours):
         docs = [d for d in t.get("documents") or []
                 if _ROSTER_DOC.search(d.get("title") or "")]
         if docs:
-            # parse_entry_pdf 只吃「報名結果」PDF 直連。籤表樹、秩序冊、以及別的
-            # scraper 補進來的官方消息頁(255139 的資格賽籤表)都要另外處理,
-            # 給錯指令只會讓人跑一次空包彈
-            auto = any("報名結果" in (d.get("title") or "")
-                       and (d.get("url") or "").lower().endswith(".pdf") for d in docs)
+            auto = any(_AUTO_DOC.search(d.get("title") or "")
+                       and _AUTO_URL.search(d.get("url") or "") for d in docs)
             unparsed.append((oid, t, auto, docs[0].get("title") or ""))
     if blind:
         warn(f"{len(blind)} 場賽事查不到任何選手(無比分、無名次、無參賽名單):"

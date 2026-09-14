@@ -19,6 +19,10 @@
 不寫死欄位順序 —— 尤其「領隊」「管理」「管理員」「教練N」欄裡放的是真人名,
 但那不是選手,收進去會讓幹部憑空多出參賽紀錄。
 
+第二種版面是 **LAPGO 的「選手名單」**(2026-09 加,見下方 parse_lapgo 的說明):
+兩欄並排的 `編號｜隊名｜姓名`,組別寫在表格外的標題列並自帶「【共N組】」。
+兩種版面共用同一套守門與寫入,只差讀法,`build_entries` 依表頭自動判別。
+
 用法:
     python -X utf8 scripts/parse_entry_pdf.py --openid 264311            # 只看報告
     python -X utf8 scripts/parse_entry_pdf.py --openid 264311 --apply    # 寫入
@@ -26,6 +30,7 @@
     python -X utf8 scripts/parse_entry_pdf.py --all --apply              # 套用
 """
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -40,10 +45,11 @@ ROOT = Path(__file__).resolve().parent.parent
 TOURN_DIR = ROOT / "docs" / "data" / "tournaments"
 sys.path.insert(0, str(ROOT / "scripts"))
 from parse_result_pdf import clean_name, match_roster, resolve_group  # noqa: E402
-from sources_common import write_if_changed                          # noqa: E402
+from sources_common import SRC_LAPGO, source_of, write_if_changed     # noqa: E402
 
 CACHE = ROOT / "inbox" / "entrypdf"          # inbox 已 gitignore
-SIGNUP_KEYWORDS = ("報名結果",)
+# mylivescore 叫「報名結果」、LAPGO 的公告叫「選手名單」,兩邊都是同一件事:誰報了名。
+SIGNUP_KEYWORDS = ("報名結果", "選手名單")
 DROPOUT_KEYWORDS = ("不成組",)
 
 # 同一列的 y 容差。不能用「四捨五入到固定格線」分列:704036 的組別標頭「35歲組男單」
@@ -56,6 +62,27 @@ _COUNT_RE = re.compile(r"^共(\d+)[組籤隊人]$")
 _PLAYER_RE = re.compile(r"^選手(\d+)$")
 _UNIT_RE = re.compile(r"^(隊名|縣市別)(\d*)$")
 _ORDER_RE = re.compile(r"^\d{6,}$")          # 單號:六位以上的報名序號
+_DRIVE_RE = re.compile(r"^https?://drive\.google\.com/file/d/([\w-]+)", re.I)
+
+# ---- LAPGO 選手名單版面 ----
+# 組別標題:「學生個人組-國小低年級男單【共33組】」。後面可能還接「比賽日期:10/22」,
+# 而收尾的「】」偶爾會被排版擠到下一列(實測 lapgo-76),所以右括號與尾巴都放寬。
+_LAPGO_TITLE = re.compile(r"^(.*?)【共\s*(\d+)\s*[組隊人]】?")
+_LAPGO_SEAT = re.compile(r"^(\d+)[-–](\d+)$")   # 編號:{組序}-{席次}
+# 欄名 → 角色。判角色前先剝掉括號註記(2024 版寫「隊名(單位)」,半形全形都出現過)。
+_LAPGO_PAREN = re.compile(r"[((].*?[))]")
+_LAPGO_ROLES = {
+    "編號": "no", "參加編號": "no",
+    "隊名": "unit",
+    "姓名": "name", "選手": "name",
+    # 2024 年的版面每列還重印一次組別。組別一律以標題為準(「【共N組】」是守門的
+    # 唯一分母,兩邊寫法不同會讓抽到數對不上宣告數),這欄只要認得出來、不讀進去。
+    "項目": "ignore",
+}
+# 隊名裡的「A/B」在雙打代表兩位搭檔分屬兩校。只認半形/全形斜線、且段數與人數都是 2
+# 才拆 —— 隊名本來就很自由,「臨打+2」「間諜8+9」「雨一直下、NO NO」都是真隊名,
+# 把 +、、 也當分隔就會拆爛(全庫 11,781 席裡只有 20 席帶分隔符)。
+_LAPGO_UNIT_SPLIT = re.compile(r"[/／]")
 
 # 抽到/宣告 落在這個區間外就只報告不寫檔。報名結果 PDF 自己宣告了每組的組數,
 # 那是唯一的驗證基準;對不上就是版面沒讀對,寧可留空號讓 verify 報出來。
@@ -63,12 +90,22 @@ MIN_RATIO, MAX_RATIO = 0.9, 1.1
 MIN_TOTAL = 10       # 全場抽到的筆數低於此值,視為這份檔沒有可用文字
 
 
+def download_url(url):
+    """Google Drive 的分享連結(/file/d/{id}/view)不會回 PDF,要換成直接下載端點。
+    LAPGO 的名單一律掛在 Drive,不換就只會拿到一頁 HTML。"""
+    m = _DRIVE_RE.match(url or "")
+    return (f"https://drive.google.com/uc?export=download&id={m.group(1)}" if m
+            else urllib.parse.quote(url, safe=":/%?=&"))
+
+
 def fetch_pdf(openid, url, kind):
     CACHE.mkdir(parents=True, exist_ok=True)
-    p = CACHE / f"{openid}-{kind}.pdf"
+    # 快取檔名帶 URL 雜湊:主辦換新版名單時 URL 會變,沿用舊檔名會一直讀到過期的那份
+    tag = hashlib.sha1((url or "").encode("utf-8")).hexdigest()[:8]
+    p = CACHE / f"{openid}-{kind}-{tag}.pdf"
     if p.exists() and p.stat().st_size > 1024:
         return p.read_bytes()
-    req = urllib.request.Request(urllib.parse.quote(url, safe=":/%?=&"))
+    req = urllib.request.Request(download_url(url))
     req.add_header("User-Agent", "Mozilla/5.0 (badminton-db parse_entry_pdf)")
     with urllib.request.urlopen(req, timeout=90) as res:
         data = res.read()
@@ -83,18 +120,37 @@ def doc_url(t, keywords):
     return None, None
 
 
+def signup_docs(t):
+    """要解析的名單文件 [(url, title), ...]。
+
+    mylivescore 只取**最新的一份**「報名結果」(舊版還留在 documents 裡,全解會把
+    退掉的人又收回來);LAPGO 的名單常拆成個人組/團體組好幾個檔貼在同一篇公告,
+    少收任何一個就是整批選手查不到,所以全部都要。documents 已依日期排序。
+    """
+    docs = [(d.get("url"), d.get("title") or "") for d in t.get("documents") or []
+            if any(k in (d.get("title") or "") for k in SIGNUP_KEYWORDS) and d.get("url")]
+    if not docs:
+        return []
+    return docs if source_of(t) == SRC_LAPGO else docs[:1]
+
+
 def page_rows(page):
     """一頁的文字依 y 併成列 → [[(x0, text), ...], ...],列內依 x 遞增。"""
+    return [row for _y, row in rows_with_y(page)]
+
+
+def rows_with_y(page):
+    """同 page_rows,但保留每列的 y —— LAPGO 版面把姓名配給「y 最近的編號」要用。"""
     words = sorted(page.get_text("words"), key=lambda w: (w[1], w[0]))
     rows, cur, top = [], [], None
     for x0, y0, _x1, _y1, txt, *_ in words:
         if top is None or y0 - top > ROW_TOL:
             if cur:
-                rows.append(sorted(cur))
+                rows.append((top, sorted(cur)))
             cur, top = [], y0
         cur.append((x0, txt))
     if cur:
-        rows.append(sorted(cur))
+        rows.append((top, sorted(cur)))
     return rows
 
 
@@ -236,6 +292,155 @@ def rows_to_people(rows):
     return out
 
 
+# ---------- 版面二:LAPGO 選手名單 ----------
+
+def _lapgo_role(text):
+    return _LAPGO_ROLES.get(_LAPGO_PAREN.sub("", text or "").strip())
+
+
+def lapgo_header(row):
+    """表頭列 → [(右界, 欄塊序, 角色), ...];角色 ∈ no/unit/name/group。不是表頭回 []。
+
+    一頁常分左右兩個欄塊、欄序完全相同,所以先照欄名把每欄轉成角色,再確認整列是
+    同一組角色重複 N 次。**照欄名判角色、不寫死順序**(同 column_roles 的理由):
+    實測三種寫法 —— `編號｜隊名｜姓名`(37 份)、`編號｜隊名｜選手`(5 份)、
+    `參加編號｜項目｜隊名(單位)｜姓名`(2 份,2024 年的舊版產生器)。
+
+    界線一律取**相鄰兩個表頭起點的中點**(同 bounds() 的理由):儲存格置中排版,
+    姓名比表頭寬時會往右壓過下一欄的起點,用「下一欄起點」當界就會把右半頁的編號
+    判進左半頁的姓名格,讀出「鄧長恩23-10」這種姓名黏編號的字(實測 lapgo-122)。
+    """
+    roles = [_lapgo_role(t) for _x, t in row]
+    if not roles or None in roles:
+        return []
+    n = roles.index(roles[0], 1) if roles.count(roles[0]) > 1 else len(roles)
+    if len(roles) % n or roles != roles[:n] * (len(roles) // n):
+        return []
+    if "no" not in roles[:n] or "name" not in roles[:n]:
+        return []
+    xs = [x for x, _t in row]
+    edges = [(xs[i] + xs[i + 1]) / 2 for i in range(len(xs) - 1)] + [float("inf")]
+    return [(e, i // n, roles[i]) for i, e in enumerate(edges)]
+
+
+def is_lapgo(doc):
+    for page in doc:
+        for row in page_rows(page):
+            if lapgo_header(row):
+                return True
+    return False
+
+
+def parse_lapgo(doc):
+    """LAPGO 選手名單 PDF → (declared, people, got)。
+
+    people = [(組別, 單位, 姓名, 姓名原字串), ...];got = {組別: 抽到的席數}。
+
+    三件非讀座標不可的事(全庫 42 份實測):
+
+    1. **編號的組序是整場跨檔連號的**,不是每份檔從 1 開始 —— 同一場的「社會組」那份
+       從 27 起跳(個人組那份用掉 1~26)。所以組序要**依出現順序**綁到標題,不能拿
+       序號當索引。
+    2. **雙打/團體的編號格是垂直置中的,自己獨佔一列**,隊名與姓名在它的上下列。
+       只讀編號那一列的隊名,團體組的隊名會全部變成空字串(實測 lapgo-101 青年混合
+       團體 14 隊全空)。隊名與姓名都要配給「同頁同欄塊裡 y 最近的編號」。
+    3. 續頁不重印表頭也不重印標題(只有編號前綴能認組),所以表頭要跨頁沿用;
+       但一頁若有表頭,表頭以上那幾列是頁首大標,落進姓名欄會冒出假選手,要擋掉。
+    """
+    titles, anchors, names, units = [], [], [], []
+    order, bound = [], {}
+    cols = []
+    for pno, page in enumerate(doc):
+        head_y = None
+        for y, row in rows_with_y(page):
+            texts = [t for _x, t in row]
+            if any(_lapgo_role(t) == "no" for t in texts):
+                head = lapgo_header(row)
+                if head:
+                    cols, head_y = head, y
+                    continue
+            m = _LAPGO_TITLE.match("".join(texts))
+            if m and m.group(1).strip():
+                titles.append((m.group(1).strip(), int(m.group(2))))
+                order.append(("T", len(titles) - 1))
+                continue
+            if not cols or (head_y is not None and y < head_y):
+                continue
+            buckets = defaultdict(list)
+            for x, t in row:
+                for edge, bi, role in cols:
+                    if x < edge:
+                        buckets[(bi, role)].append(t)
+                        break
+            for bi in {b for b, _r in buckets}:
+                seat = next((t for t in buckets.get((bi, "no"), [])
+                             if _LAPGO_SEAT.match(t)), None)
+                if seat:
+                    g, seq = _LAPGO_SEAT.match(seat).groups()
+                    if int(g) not in bound:
+                        bound[int(g)] = None
+                        order.append(("G", int(g)))
+                    anchors.append((pno, bi, y, int(g), int(seq)))
+                unit = cell_text(buckets.get((bi, "unit"), []))
+                if unit and _lapgo_role(unit) != "unit":
+                    units.append((pno, bi, y, unit))
+                name = cell_text(buckets.get((bi, "name"), []))
+                # 單字的姓名格一定是碎片,不是人:罕用字遇到字型 fallback 會被排到
+                # 上一列自成一格(lapgo-128「施珵𧙗」的𧙗),隊名太長溢出到姓名欄也會
+                # 留下一個字(lapgo-135「國立清華附小TOS校隊」的「校」)。收進去會
+                # 生出查得到的假選手;丟掉最多只是少一個字,不會無中生有。
+                if len(name) > 1 and _lapgo_role(name) != "name":
+                    names.append((pno, bi, y, name))
+
+    by_block = defaultdict(list)
+    for a in anchors:
+        by_block[(a[0], a[1])].append(a)
+
+    def seat_of(pno, bi, y):
+        cands = by_block.get((pno, bi))
+        if not cands:
+            return None
+        a = min(cands, key=lambda a: abs(a[2] - y))
+        return (a[3], a[4])
+
+    seat_names, seat_unit = defaultdict(list), {}
+    for pno, bi, y, name in names:
+        s = seat_of(pno, bi, y)
+        if s:
+            seat_names[s].append(name)
+    for pno, bi, y, unit in units:
+        s = seat_of(pno, bi, y)
+        if s:
+            seat_unit.setdefault(s, unit)       # 同一席的隊名會重複,取第一個
+
+    pend = []
+    for kind, v in order:
+        if kind == "T":
+            pend.append(v)
+        elif pend:
+            bound[v] = pend.pop(0)
+
+    declared, got, people = {}, defaultdict(int), []
+    for g, ti in bound.items():
+        if ti is not None:
+            declared[titles[ti][0]] = declared.get(titles[ti][0], 0) + titles[ti][1]
+    for (g, seq) in sorted({(a[3], a[4]) for a in anchors}):
+        ti = bound.get(g)
+        if ti is None:                          # 組序配不到標題 → 這組沒有分母可驗
+            continue
+        group = titles[ti][0]
+        got[group] += 1
+        members = seat_names.get((g, seq)) or []
+        unit = seat_unit.get((g, seq), "")
+        parts = [p.strip() for p in _LAPGO_UNIT_SPLIT.split(unit) if p.strip()]
+        pair = parts if len(parts) == 2 and len(members) == 2 else None
+        for i, raw in enumerate(members):
+            name = clean_name(raw)
+            if name:
+                people.append((group, pair[i] if pair else unit, name, raw))
+    return declared, people, dict(got)
+
+
 def dropout_names(doc):
     """不成組名單 → {(組別, 姓名原字串), ...}。
 
@@ -264,21 +469,49 @@ def is_dropped(group, name, drop):
     return False
 
 
-def build_entries(doc, drop, known, roster):
-    """報名結果 PDF → (entries, coverage, 每組抽到/宣告, 扣掉的不成組筆數, 不收的理由)。"""
-    cols = find_header(doc)
-    if not cols:
+def read_doc(doc):
+    """一份 PDF → (declared, people, got),自動判別版面。讀不出來回 None。
+
+    兩種版面的分辨方式都是表頭:mylivescore 的報名結果以「單號」開頭,
+    LAPGO 的選手名單是「編號｜隊名｜姓名」成組重複。
+    """
+    if find_header(doc):
+        declared, rows = parse_pdf(doc)
+        got = defaultdict(int)
+        for g, _cells, _cols in rows:
+            got[g] += 1
+        return declared, rows_to_people(rows), dict(got)
+    if is_lapgo(doc):
+        return parse_lapgo(doc)
+    return None
+
+
+def build_entries(docs, drop, known, roster):
+    """名單 PDF(可多份)→ (entries, coverage, 每組抽到/宣告, 扣掉的不成組筆數, 不收的理由)。
+
+    LAPGO 會把同一場的名單拆成個人組/團體組好幾個檔,合起來才是完整的一場,
+    所以宣告數與抽到數都跨檔累加後再一起過守門。
+    """
+    declared, people, got = {}, [], defaultdict(int)
+    read = 0
+    for doc in docs:
+        out = read_doc(doc)
+        if out is None:
+            continue
+        read += 1
+        d, p, g = out
+        for k, v in d.items():
+            declared[k] = declared.get(k, 0) + v
+        people.extend(p)
+        for k, v in g.items():
+            got[k] += v
+    if not read:
         return [], None, {}, 0, "讀不到表頭"
-    declared, rows = parse_pdf(doc)
     if not declared:
         return [], None, {}, 0, "讀不到組別宣告數,沒有可驗證的基準"
 
-    got = defaultdict(int)
-    for g, _cells, _cols in rows:
-        got[g] += 1
-
     entries, seen, dropped = [], set(), 0
-    for g, unit, name, _raw in rows_to_people(rows):
+    for g, unit, name, _raw in people:
         if is_dropped(g, name, drop):
             dropped += 1
             continue
@@ -312,18 +545,22 @@ def process(openid, apply=False, local=None):
     t = json.loads(path.read_text(encoding="utf-8"))
     existing = json.loads(path.read_text(encoding="utf-8"))
 
-    url, title = doc_url(t, SIGNUP_KEYWORDS)
-    if not local and not url:
-        return {"openid": openid, "status": "無報名結果PDF"}
+    wanted = signup_docs(t)
+    if not local and not wanted:
+        return {"openid": openid, "status": "無報名名單PDF"}
+    title = "、".join(w[1] for w in wanted)[:60]
 
+    docs = []
     try:
         if local:
             src = Path(local) if Path(local).is_absolute() else ROOT / local
             if not src.exists():
                 return {"openid": openid, "status": f"找不到本地檔:{local}"}
-            doc = fitz.open(src)
+            docs.append(fitz.open(src))
         else:
-            doc = fitz.open(stream=fetch_pdf(openid, url, "signup"), filetype="pdf")
+            for i, (url, _tt) in enumerate(wanted):
+                docs.append(fitz.open(stream=fetch_pdf(openid, url, f"signup{i}"),
+                                      filetype="pdf"))
     except Exception as exc:                                  # noqa: BLE001
         return {"openid": openid, "status": f"PDF 讀取失敗:{exc}"}
 
@@ -339,7 +576,7 @@ def process(openid, apply=False, local=None):
     roster = match_roster(t)
     known = {g.get("name") for g in t.get("groups") or [] if g.get("name")}
     known |= set(roster)
-    entries, coverage, per_group, dropped, why = build_entries(doc, drop, known, roster)
+    entries, coverage, per_group, dropped, why = build_entries(docs, drop, known, roster)
 
     res = {"openid": openid, "name": t.get("name"), "title": title,
            "status": "OK" if entries else "不收", "why": why,
@@ -378,7 +615,7 @@ def targets_all(force=False):
         t = json.loads(p.read_text(encoding="utf-8"))
         if not force and (t.get("matches") or t.get("standings")):
             continue
-        if doc_url(t, SIGNUP_KEYWORDS)[0]:
+        if signup_docs(t):
             out.append(p.stem)
     return out
 

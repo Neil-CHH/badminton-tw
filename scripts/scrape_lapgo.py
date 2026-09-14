@@ -14,6 +14,8 @@ API(免登入,只要帶從任一頁面抓到的 csrf-token + cookie):
          end_date/place/type。type=='羽球比賽' 才收。
   POST /web/getSessionScoreGrouped  body cid=  → {table:[...]} 逐場比分
   POST /eventinfo/getResultsSummary body cid=  → 官方成績總表(名次,可到第 5 名)
+  POST /web/getWebContent           body id=   → 賽事自訂頁面(含最新消息清單)
+  POST /getNewsContent              body id=   → 單篇公告內文(名單/籤表的連結在這裡)
 
 注意:`show_livescore` 旗標不可靠(實測 20 場 show_livescore=0 的已結束賽事有 17 場仍回傳
 完整比分),故比照 scrape.py 對 mylivescore 的作法:一律試抓,不看旗標。
@@ -26,10 +28,11 @@ import json
 import re
 import sys
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import unquote
 
+from fetch_docs import classify
 from scrape import base_group, derive_category, derive_standings, parse_group_tags
 from sources_common import (NON_BADMINTON, SRC_LAPGO, Http, blocked_openids,
                             city_from_text, find_csrf, loads_lenient,
@@ -55,6 +58,7 @@ MATCHTYPE_OK = {"預賽", "R34", "F2", "F3", "F4"} | {f"R{n}" for n in
 # (lapgo-153 律師盃邀請賽的 9 場團體「友誼賽」)。
 MATCHTYPE_DROP = {"友誼賽", "表演賽", "熱身賽", "交流賽"}
 HEAD_MAP = {"single": "單打", "double": "雙打", "group": "團體"}
+
 RANK_WORD = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8}
 _RESULT_LINE = re.compile(r'<div class="result_line">(.*?)</div>', re.S)
 _TAG = re.compile(r"<[^>]+>")
@@ -66,6 +70,18 @@ _SUFFIX = re.compile(r"[((\[【][〇零一二三四五六七八九十百千\dA-Z
 # 循環賽的分組配對代號(A1-A2),共同前綴會殘留池代號字母
 _POOL_PAIR = re.compile(r"[A-Za-z]\d+\s*[-–]\s*[A-Za-z]?\d+\s*$")
 _POOL_TAIL = re.compile(r"[A-Za-z]{1,2}\d*$")
+
+# ---- 賽事公告(最新消息)----
+# 賽後仍追公告的天數(同 fetch_docs.RECHECK_DAYS 的理由:主辦常在賽後補貼文件)
+NEWS_RECHECK_DAYS = 60
+# 公告內文裡「算是文件」的連結。官方名單一律掛 Google Drive,少數掛 lapgo 自己的
+# storage;LINE/Facebook/賽事頁本身不是文件,不能收進 documents。
+_DOC_LINK = re.compile(
+    r"https?://(?:drive\.google\.com/file/d/[\w-]+"
+    r"|docs\.google\.com/[^\s\"'<>]+"
+    r"|lapgo\.com\.tw/storage/[^\s\"'<>]+"
+    r"|[^\s\"'<>]+\.(?:pdf|xlsx|xls))", re.I)
+_DRIVE_FILE = re.compile(r"^https?://drive\.google\.com/file/d/([\w-]+)", re.I)
 
 
 class LapgoApi:
@@ -102,6 +118,18 @@ class LapgoApi:
         if d.get("error"):
             return None
         return d
+
+    def web_content(self, cid):
+        """賽事自訂頁面。type=='news' 那筆帶 news[](id/title/updated_at)。"""
+        d = self.post("/web/getWebContent", {"id": str(cid)})
+        return d if isinstance(d, list) else []
+
+    def news_content(self, nid, referer):
+        """單篇公告內文(HTML,整份是 URL-encode 過的)。"""
+        raw = self.http.post_form(BASE + "/getNewsContent", {"id": str(nid)},
+                                  referer=referer,
+                                  headers={"X-CSRF-TOKEN": self.token})
+        return unquote(raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw)
 
 
 # ---------- 比分正規化 ----------
@@ -376,12 +404,75 @@ def derive_status(info, today=None):
     return "registering"
 
 
+def _canon_link(url):
+    """Google Drive 的分享連結會帶各式 ?usp= 尾巴,同一個檔在不同公告寫法不同。
+    正規化成 /view,documents 才不會同一份名單重複兩筆、每月比對也才穩定。"""
+    m = _DRIVE_FILE.match(url)
+    return f"https://drive.google.com/file/d/{m.group(1)}/view" if m else url
+
+
+def news_window(info, today=None):
+    """這場賽事還會不會出公告:尚未結束,或結束未滿 NEWS_RECHECK_DAYS 天。
+
+    **賽前公告正好落在舊增量條件會跳過的那段**:選手名單是「報名截止、還沒開打」時
+    貼出來的,那段期間 status 不變、比分也還沒有,`need` 一路判 False。實測 lapgo-128
+    大佛盃的 1,018 席名單公布了 6 天,月更完全沒碰到那場。賽後仍追 60 天,理由同
+    fetch_docs 的 RECHECK_DAYS:主辦常在賽後補貼成績與完整名單。
+    """
+    today = today or date.today().isoformat()
+    end = (info.get("end_date") or "")[:10] or (info.get("start_date") or "")[:10]
+    if not end:
+        return True
+    return end >= (date.fromisoformat(today) - timedelta(days=NEWS_RECHECK_DAYS)).isoformat()
+
+
+def news_documents(api, info):
+    """賽事公告 → documents[]。
+
+    LAPGO 的 API 沒有報名名單端點(2026-09 查證,見 CLAUDE.md),但主辦會把
+    **選手名單／抽籤結果／賽程**貼成「最新消息」,檔案掛在 Google Drive。
+    實測 62 場羽球賽事有 30 場貼了選手名單,而我們一直沒讀 —— 那些賽事在開打前
+    一位選手都查不到,即使答案早就公開了(lapgo-128 大佛盃:39 組 1,018 席)。
+
+    公告清單在 /web/getWebContent,但**清單只有標題與時間**,連結在內文裡,
+    要逐篇打 /getNewsContent 才拿得到。一篇公告可以掛好幾個檔(個人組/團體組分開),
+    所以 documents 是一對多,parse_entry_pdf 那邊要全部解析而不是只取第一個。
+    """
+    referer = (info.get("url") or LIST_PAGE) + "/news"
+    out, seen = [], set()
+    for page in api.web_content(info["id"]):
+        if page.get("type") != "news":
+            continue
+        for n in page.get("news") or []:
+            title = (n.get("title") or "").strip()
+            try:
+                html = api.news_content(n.get("id"), referer)
+            except Exception as e:                            # noqa: BLE001
+                print(f"  [提醒] lapgo-{info['id']} 公告 {n.get('id')} 讀取失敗:{e}")
+                continue
+            time.sleep(0.2)
+            urls = list(dict.fromkeys(_canon_link(u) for u in _DOC_LINK.findall(html)))
+            for i, u in enumerate(urls):
+                if u in seen:
+                    continue
+                seen.add(u)
+                out.append({
+                    "title": title if len(urls) == 1 else f"{title}({i + 1})",
+                    "url": u,
+                    "date": (n.get("updated_at") or "")[:10],
+                    "type": classify(title, u),
+                    "source": "lapgo-news",
+                })
+    out.sort(key=lambda d: d.get("date") or "", reverse=True)
+    return out
+
+
 def load_existing(openid):
     p = TOURN_DIR / f"{openid}.json"
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
 
-def build_record(api, info, existing):
+def build_record(api, info, existing, with_news=True):
     cid = info["id"]
     openid = f"lapgo-{cid}"
     name = info.get("name") or ""
@@ -412,6 +503,17 @@ def build_record(api, info, existing):
         "documents": (existing or {}).get("documents"),
         "lastUpdated": date.today().isoformat(),
     }
+    # entries/entriesCoverage 是 parse_entry_pdf 解析名單寫進去的、API 沒有這兩個欄位。
+    # 不從 existing 帶過去,每月重抓就會洗掉、下個月再解析一次,無限循環
+    # (目標賽事多半還沒打完,每月都會重抓)。同 scrape.py 的既有規則。
+    for k in ("entries", "entriesCoverage"):
+        if (existing or {}).get(k) is not None:
+            record[k] = existing[k]
+
+    if with_news:
+        docs = news_documents(api, info)
+        if docs:                        # 抓空時保留既有的,免得一次讀取失敗就清光
+            record["documents"] = docs
 
     unknown = set()
     dropped = []
@@ -477,10 +579,12 @@ def main():
             continue
         existing = load_existing(openid)
         status = derive_status(info)
+        fresh = news_window(info)
         need = (
             full or only or existing is None
             or existing.get("status") != status
             or status == "ongoing"
+            or fresh                    # 還在出公告的賽事每月都要回頭看(見 news_window)
             or (status == "finished" and not existing.get("matches")
                 and not existing.get("standings"))
         )
@@ -488,13 +592,16 @@ def main():
             skipped += 1
             continue
         try:
-            record = build_record(api, info, existing)
+            record = build_record(api, info, existing,
+                                  with_news=fresh or bool(full or only))
         except Exception as e:  # noqa: BLE001
             print(f"  [錯誤] {openid} {info.get('name')}: {e}")
             continue
 
         label = "新增" if existing is None else "更新"
         detail = f"{len(record['matches'])} 場比賽、{len(record['standings'])} 筆名次"
+        if record.get("documents"):
+            detail += f"、{len(record['documents'])} 筆公告文件"
         if dry:
             print(f"  [{label}(dry)] {openid} {record['name'][:30]} ({detail})")
             continue
