@@ -56,6 +56,9 @@ DROPOUT_KEYWORDS = ("不成組",)
 # 在 y=62.5、右側的「共2組」在 y=63.0,固定格線會把同一列切成兩列,宣告組數就讀不到
 # (實測 3 場的宣告數因此變成 0,而那是唯一的驗證基準)。
 ROW_TOL = 3.0
+# 判定「上下兩行是同一個欄名」的 x 容差。堆疊的欄名不會對齊到 pt(734564 的「衣服」在
+# x=201、「尺寸1」在 x=199),但相鄰欄至少差 25pt 以上,所以這個值很寬鬆也不會誤併。
+HEAD_FRAG_X = 8.0
 
 
 _COUNT_RE = re.compile(r"^共(\d+)[組籤隊人]$")
@@ -183,10 +186,15 @@ def cell_text(parts):
     會被拆成三個字,不接回去會變成三位不存在的選手;中文之間則不補空格。
     純數字的碎片丟掉 —— 姓名格裡混進來的是序號(實測「180 陳俞安」「0 黃柏宇」),
     不是名字的一部分。
+
+    **接到一半已經出現過的尾巴就跳過**(2026-09 加):有些 PDF 把同一段文字疊印兩次
+    來做假粗體,偏移幾個 pt,words 就回兩份 —— 285271 竹南鎮長盃的
+    「張祐榮」+「祐榮」會接成「張祐榮祐榮」這個不存在的人(實測 10 筆已寫進庫裡)。
+    正常的姓名碎片是不同的字(「Bekti」+「Saputra」),不會是已接內容的尾巴。
     """
     out = ""
     for x in parts:
-        if x.isdigit():
+        if x.isdigit() or (out and out.endswith(x)):
             continue
         if out and re.search(r"[A-Za-z0-9]$", out) and re.match(r"[A-Za-z0-9]", x):
             out += " "
@@ -225,12 +233,56 @@ def column_roles(cols):
     return players, units, (team_col if use_team else None)
 
 
+def is_header(texts):
+    return "單號" in texts and ("組別" in texts or "項目" in texts)
+
+
+def _row_pitch(rows):
+    """一頁的主要行距(相鄰列 y 差的中位數)。堆疊的表頭列靠得比這個近得多。"""
+    ys = [y for y, _r in rows]
+    diffs = sorted(b - a for a, b in zip(ys, ys[1:]) if b > a)
+    return diffs[len(diffs) // 2] if diffs else 0.0
+
+
+def header_cols(rows, i):
+    """主表頭那一列 + 疊在它上下的欄名碎片 → [(x, 欄名), ...]。
+
+    **表頭可以疊成好幾列**(2026-09 修):734564 成大盃的「衣服尺寸1/2」「參照成績1/2」
+    欄名被拆成上下兩行(「衣服」在主表頭上方、「尺寸1」在下方),主表頭那列裡根本
+    沒有這幾欄。只認主表頭,選手1 與 隊名1 之間就少了一道界線,置中的尺寸值(XL/2L)
+    會落進選手格,解出「陳士智XL」「2L侯靖思」這種假選手 —— 實測該場 2,234 個姓名
+    只有 53 個對得上比分。欄名本身其實不重要(column_roles 只挑選手N/隊名N,認不得的
+    欄自然被忽略),**要的是那道 x 界線**。
+
+    判準是 y:堆疊的欄名離主表頭不到一般行距的 0.7 倍(實測 3.6pt vs 行距 6.9pt),
+    而最近的資料列或組別標頭至少隔一整個行距。再排掉帶單號/「共N組」的列以策安全。
+    """
+    y0, main = rows[i]
+    cols = {x: [t] for x, t in main}
+    pitch = _row_pitch(rows)
+    for j in (i - 1, i + 1):
+        if not 0 <= j < len(rows):
+            continue
+        y, row = rows[j]
+        if not pitch or abs(y - y0) >= pitch * 0.7:
+            continue
+        if any(_ORDER_RE.match(t) or _COUNT_RE.match(t) for _x, t in row):
+            continue
+        for x, t in row:
+            near = min(cols, key=lambda c: abs(c - x))
+            if abs(near - x) <= HEAD_FRAG_X:
+                cols[near].insert(0 if j < i else len(cols[near]), t)
+            else:
+                cols[x] = [t]
+    return sorted((x, "".join(v)) for x, v in cols.items())
+
+
 def find_header(doc):
     for page in doc:
-        for row in page_rows(page):
-            texts = [t for _x, t in row]
-            if "單號" in texts and ("組別" in texts or "項目" in texts):
-                return list(row)
+        rows = rows_with_y(page)
+        for i, (_y, row) in enumerate(rows):
+            if is_header([t for _x, t in row]):
+                return header_cols(rows, i)
     return []
 
 
@@ -247,10 +299,11 @@ def parse_pdf(doc):
     cols, group = [], None
     declared, rows = {}, []
     for page in doc:
-        for row in page_rows(page):
+        page_r = rows_with_y(page)
+        for i, (_y, row) in enumerate(page_r):
             texts = [t for _x, t in row]
-            if "單號" in texts and ("組別" in texts or "項目" in texts):
-                cols = list(row)
+            if is_header(texts):
+                cols = header_cols(page_r, i)
                 continue
             counts = [t for t in texts if _COUNT_RE.match(t)]
             if counts and len(row) <= 3:
