@@ -449,6 +449,14 @@ python -m http.server 8765 -d docs   # 本地預覽
   746611 拿男雙冠軍、單打團體亞軍、雙打團體亞軍,官方規程確認是三個獨立報名的項目)。
   但 player.html 的 🏆 成績總覽每列都印賽名,同一個賽名連著出現好幾次很容易被當成資料重複,
   所以賽事欄用 `rowspan` 併成一格,標題也寫成「N 個獎項・M 場賽事」。
+- **unit.html 的長度控制(2026-09)**:單位得獎動輒上百筆(四維國小 113 個獎項・36 場),
+  得獎紀錄**依賽事分塊**(`details.award-t`,最近 `AWARD_OPEN`=3 場展開,收起時標題列仍有
+  🥇🥈🥉 數量);「得獎紀錄」「參賽履歷」兩段再各自**整段可收合**(`details.sec-fold`),
+  收合狀態存 localStorage(`unit-fold-awards` / `unit-fold-history`,讀寫都包 try/catch);
+  參賽履歷先畫 `HIST_PAGE`=10 場。同校寫法由 `unitKey()` **預設合併**(見資料模型重點)。
+- **LAPGO 賽程(時間/場地)還沒接**:抽籤後、比分前的賽程在 `/web/searchSession`
+  (`cid, date, group, keyword`),開打前回 `[]`、格式未驗證。**未打的場次不可放進 `matches[]`**
+  —— 沒有勝負會被 rebuild_index 算進出賽統計,要另開欄位顯示。
 - **檔案大小一律看 gzip,不要看磁碟上的 raw** —— GitHub Pages 對 .json 有 gzip,
   實際傳輸約是 raw 的 1/3(search-index-players 2043KB→669KB、players 分片 1198KB→196KB)。
   `rebuild_index` 印的是 raw,拿它評估使用者流量會高估三倍。
