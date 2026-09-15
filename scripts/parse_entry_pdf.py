@@ -597,6 +597,8 @@ def process(openid, apply=False, local=None):
         return {"openid": openid, "status": "查無此賽事"}
     t = json.loads(path.read_text(encoding="utf-8"))
     existing = json.loads(path.read_text(encoding="utf-8"))
+    if has_lapgo_draw(t):
+        return {"openid": openid, "status": "已有抽籤結果名單,不讀 PDF"}
 
     wanted = signup_docs(t)
     if not local and not wanted:
@@ -654,6 +656,15 @@ def process(openid, apply=False, local=None):
     return res
 
 
+def has_lapgo_draw(t):
+    """LAPGO 賽事已由 scrape_lapgo.draw_data 寫入抽籤結果名單。
+    那份比選手名單 PDF 新(名單確認期更正後才抽籤),而且組名不同(API 組名 vs PDF 標題),
+    再把 PDF 名單加回去會讓同一批人以兩種組名各登錄一次。tsba/sportgov 的 draw 名單
+    是另一回事(可以與 signup 並存),所以只認 lapgo。"""
+    return t.get("source") == "lapgo" and any(
+        e.get("source") == "draw" for e in t.get("entries") or [])
+
+
 def targets_all(force=False):
     """使用者定的那條線:抽籤完就要查得到人。
 
@@ -667,6 +678,8 @@ def targets_all(force=False):
     for p in sorted(TOURN_DIR.glob("*.json")):
         t = json.loads(p.read_text(encoding="utf-8"))
         if not force and (t.get("matches") or t.get("standings")):
+            continue
+        if has_lapgo_draw(t):
             continue
         if signup_docs(t):
             out.append(p.stem)

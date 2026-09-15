@@ -16,6 +16,8 @@ API(免登入,只要帶從任一頁面抓到的 csrf-token + cookie):
   POST /eventinfo/getResultsSummary body cid=  → 官方成績總表(名次,可到第 5 名)
   POST /web/getWebContent           body id=   → 賽事自訂頁面(含最新消息清單)
   POST /getNewsContent              body id=   → 單篇公告內文(名單/籤表的連結在這裡)
+  POST /web/getSessionGroup         body cid=  → 組別定義(id 即籤表的 sid)
+  POST /web/getSessionMapData       body sid=  → 抽籤結果(籤位 → 「單位,姓名 姓名」)
 
 注意:`show_livescore` 旗標不可靠(實測 20 場 show_livescore=0 的已結束賽事有 17 場仍回傳
 完整比分),故比照 scrape.py 對 mylivescore 的作法:一律試抓,不看旗標。
@@ -123,6 +125,16 @@ class LapgoApi:
         """賽事自訂頁面。type=='news' 那筆帶 news[](id/title/updated_at)。"""
         d = self.post("/web/getWebContent", {"id": str(cid)})
         return d if isinstance(d, list) else []
+
+    def session_groups(self, cid):
+        """組別定義:id(= 籤表的 sid)、name、type(single/double/three/group)、has_preliminary。"""
+        d = self.post("/web/getSessionGroup", {"cid": str(cid)})
+        return d if isinstance(d, list) else []
+
+    def session_map(self, sid):
+        """單一組別的籤表。有預賽的在 teamData(numA1…),純淘汰的在 final_schedule_map(num1…)。"""
+        d = self.post("/web/getSessionMapData", {"sid": str(sid)})
+        return d if isinstance(d, dict) else {}
 
     def news_content(self, nid, referer):
         """單篇公告內文(HTML,整份是 URL-encode 過的)。"""
@@ -467,6 +479,109 @@ def news_documents(api, info):
     return out
 
 
+# ---- 抽籤結果(籤表)----
+# 籤位鍵:有預賽的「numA1」= A 組第 1 位;純淘汰的「num12」= 第 12 籤位
+_SEAT_KEY = re.compile(r"^num([A-Za-z]*)(\d+)$")
+_CJK = re.compile(r"[㐀-鿿\U00020000-\U0003ffff]")
+# 籤位數 ÷ 官方隊數低於這個比例就整場不收(抽到一半的籤不能蓋掉完整的 PDF 名單)
+DRAW_MIN_COVERAGE = 0.9
+# 還沒抽籤的賽事每組都回空的;連續這麼多組都空就不再往下問
+DRAW_EMPTY_STOP = 5
+
+
+def split_names(text):
+    """「邱彥勛 盧品安」→ 兩人。外文姓名本身含空白(「uyen Dang Huy Nhat」),
+    連續的非中文 token 要併回同一人,不能一律按空白拆。"""
+    out = []
+    for tok in text.split():
+        if out and not _CJK.search(tok) and not _CJK.search(out[-1]):
+            out[-1] += " " + tok
+        else:
+            out.append(tok)
+    return out
+
+
+def parse_seat(value, gtype):
+    """籤位字串 → (unit, members);空籤位(輪空)回 None。
+    個人/雙打/三人組:「單位,姓名 姓名」,沒填單位時只有姓名;團體組(group)只有隊名。"""
+    v = (value or "").strip()
+    if not v:
+        return None
+    if gtype == "group":
+        return v, []
+    unit, _, names = v.rpartition(",")
+    names = names.strip()
+    members = [names] if gtype == "single" else split_names(names)
+    return unit.strip(), [m for m in members if m]
+
+
+def _draw_entries(group, unit, members):
+    """一個籤位 → entries。搭檔分屬兩校時單位寫成「甲校/乙校」,要拆成每人各自的單位,
+    否則單位頁會多出「甲校/乙校」這種假單位(同 standings 的 memberUnits 問題)。
+    團體組籤位只有隊名、沒有隊員,登錄不了任何選手,不產生 entry(籤表 draws 仍保留)。"""
+    if not members:
+        return []
+    units = [u.strip() for u in re.split(r"[/／]", unit)] if unit else []
+    if len(members) > 1 and len(units) == len(members):
+        return [{"group": group, "unit": u, "members": [m], "source": "draw"}
+                for u, m in zip(units, members)]
+    return [{"group": group, "unit": unit, "members": members, "source": "draw"}]
+
+
+def draw_data(api, info):
+    """抽籤結果 → (entries, draws, coverage)。
+
+    主辦在「最新消息」公告「抽籤結果出爐」時**不附檔**,只給賽事頁的 /score 連結 ——
+    籤表是頁面用 /web/getSessionMapData 即時畫出來的,news_documents 永遠收不到
+    (lapgo-128 大佛盃 2026-09-15 的公告就是這樣)。但這支 API 本身就公開,而且不必等
+    主辦貼公告:只要抽了籤就拿得到,已結束的舊賽事(2024 lapgo-34)也照樣回傳。
+
+    抽籤結果比選手名單 PDF 新(名單確認期更正後才抽),組名也跟之後的比分一致,
+    所以拿到完整籤表時整份取代 PDF 名單。draws[] 另外保存分組:預賽是小組循環,
+    同組互為對手,這是開打前唯一能給使用者的「對手」資訊(時間/場地要等賽程公告)。
+    """
+    entries, draws = [], []
+    filled = declared = empty_run = 0
+    for g in api.session_groups(info["id"]):
+        gname = (g.get("name") or "").strip()
+        gtype = g.get("type") or ""
+        try:
+            d = api.session_map(g["id"])
+        except Exception as e:                                # noqa: BLE001
+            # 一組失敗就整場不收:半套名單會蓋掉完整的 PDF 名單
+            print(f"  [提醒] lapgo-{info['id']} 籤表 {gname} 讀取失敗,整場略過:{e}")
+            return [], [], None
+        time.sleep(0.15)
+        declared += int(d.get("total_team_count") or 0)
+        prelim = bool(d.get("has_preliminary"))
+        # 有預賽的組,final_schedule_map 是預賽打完才排的決賽籤,開打前是 null 或晉級代號
+        seat_map = (d.get("teamData") if prelim else d.get("final_schedule_map")) or {}
+        pools = {}
+        for key, val in seat_map.items():
+            m = _SEAT_KEY.match(key)
+            seat = parse_seat(val, gtype) if m else None
+            if seat:
+                pools.setdefault(m.group(1).upper(), []).append((int(m.group(2)), *seat))
+        if not pools:
+            empty_run += 1
+            if not filled and empty_run >= DRAW_EMPTY_STOP:
+                return [], [], None                           # 還沒抽籤
+            continue
+        empty_run = 0
+        dr = {"group": gname, "type": gtype, "format": "pool" if prelim else "bracket",
+              "pools": []}
+        for pname in sorted(pools, key=lambda x: (len(x), x)):   # A…Z、AA…
+            seats = sorted(pools[pname], key=lambda x: x[0])
+            dr["pools"].append({"name": pname, "seats": [
+                {"pos": pos, "unit": unit, "members": members} for pos, unit, members in seats]})
+            for _, unit, members in seats:
+                filled += 1
+                entries.extend(_draw_entries(gname, unit, members))
+        draws.append(dr)
+    coverage = round(filled / declared, 3) if declared else None
+    return entries, draws, coverage
+
+
 def load_existing(openid):
     p = TOURN_DIR / f"{openid}.json"
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
@@ -506,7 +621,8 @@ def build_record(api, info, existing, with_news=True):
     # entries/entriesCoverage 是 parse_entry_pdf 解析名單寫進去的、API 沒有這兩個欄位。
     # 不從 existing 帶過去,每月重抓就會洗掉、下個月再解析一次,無限循環
     # (目標賽事多半還沒打完,每月都會重抓)。同 scrape.py 的既有規則。
-    for k in ("entries", "entriesCoverage"):
+    # draws 只在開打前抓(見下方),比分上線後也要帶著,不然籤表會在開打那個月消失。
+    for k in ("entries", "entriesCoverage", "draws"):
         if (existing or {}).get(k) is not None:
             record[k] = existing[k]
 
@@ -536,6 +652,27 @@ def build_record(api, info, existing, with_news=True):
              "drawUrl": None}
             for g in sorted({base_group(m["groupName"]) for m in matches if m["groupName"]})
         ]
+
+    # 抽籤結果:比分上線前唯一拿得到「誰在哪一組、跟誰同組」的地方(見 draw_data)。
+    # 比分上線後就不再問 —— 那時選手已由比分登錄,籤表沿用開打前抓到的那份。
+    # 不限公告期:已結束卻始終沒有比分的舊賽事(lapgo-27 捷豹盃、lapgo-32 花蓮市長盃,
+    # 資料缺口清單上的常客)籤表 API 照樣回傳,這是它們唯一查得到選手的來源。
+    # 沒抽籤的賽事連問 DRAW_EMPTY_STOP 組就停,每月成本很小。
+    if not matches:
+        d_entries, draws, cov = draw_data(api, info)
+        if draws and cov is not None and cov < DRAW_MIN_COVERAGE:
+            print(f"  [籤表] {openid} 籤位只有官方隊數的 {cov:.0%},疑似還沒抽完,不收")
+        elif draws:
+            record["draws"] = draws
+            record["entries"] = d_entries
+            record["entriesCoverage"] = cov
+            score_url = f"{info['url']}/score" if info.get("url") else None
+            record["groups"] = [
+                {"id": "", "name": dr["group"],
+                 "tags": parse_group_tags(dr["group"], HEAD_MAP.get(dr["type"], "")),
+                 "drawUrl": score_url}
+                for dr in draws
+            ]
 
     # 官方成績總表優先於推導名次;總表沒涵蓋的組別再用 derive_standings 補
     incoming = []
@@ -602,6 +739,8 @@ def main():
         detail = f"{len(record['matches'])} 場比賽、{len(record['standings'])} 筆名次"
         if record.get("documents"):
             detail += f"、{len(record['documents'])} 筆公告文件"
+        if record.get("draws"):
+            detail += f"、籤表 {len(record['draws'])} 組 {len(record.get('entries') or [])} 人次"
         if dry:
             print(f"  [{label}(dry)] {openid} {record['name'][:30]} ({detail})")
             continue

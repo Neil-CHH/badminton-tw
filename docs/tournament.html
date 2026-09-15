@@ -26,6 +26,31 @@ const PAGE = 150;
 let T = null, shown = PAGE;
 /* 參賽名單:[[組別, [[姓名, 單位], …]], …];entrySel 為目前展開的組別索引(-1 = 都沒展開) */
 let ENTRY_GROUPS = [], entrySel = -1;
+let DRAWS = new Map();   // 組別 → 抽籤結果(LAPGO 開打前的分組籤表)
+
+/* 抽籤結果:預賽畫成一格一小組(同組互為對手),純淘汰畫成籤位順序。
+   kw 非空時只留符合的籤位;回傳 { hits, html }。 */
+function drawHTML(d, kw) {
+  let hits = 0;
+  const pools = d.pools.map(p => {
+    const seats = p.seats.filter(s => !kw || (s.unit || "").includes(kw) || s.members.some(m => m.includes(kw)));
+    hits += seats.length;
+    if (!seats.length) return "";
+    return `<div class="pool"><div class="pool-h">${d.format === "pool" ? `${esc(p.name)} 組` : "籤位"}</div>` +
+      seats.map(s => `<div class="seat">${d.format === "bracket" ? `<span class="pos">${s.pos}</span>` : ""}${
+        s.members.length
+          ? s.members.map(m => `<a href="./player.html?name=${encodeURIComponent(m)}">${esc(m)}</a>`).join("、") +
+            (s.unit ? ` <span class="u">${esc(s.unit)}</span>` : "")
+          : `<b>${esc(s.unit)}</b>`}</div>`).join("") + `</div>`;
+  }).join("");
+  return { hits, html: pools ? `<div class="pool-grid">${pools}</div>` : "" };
+}
+function drawNote(d) {
+  const tail = (T.matches || []).length ? "" : "比賽時間與場地待官方公布賽程。";
+  return `<div class="note" style="margin:4px 0 0">${d.format === "pool"
+    ? "預賽為小組循環,同組互為對手;預賽後的決賽籤表待預賽結束才產生。"
+    : "依籤位順序排列(輪空不列出),實際對戰以官方籤表為準。"}${tail}</div>`;
+}
 
 /* 同單位的人併成一列(單位照名單出現順序),比一人一格的長串好掃 */
 function entryRowsHTML(people) {
@@ -47,6 +72,10 @@ function renderEntries() {
   if (kw) {
     grps.hidden = true;
     list.innerHTML = ENTRY_GROUPS.map(([g, people]) => {
+      if (DRAWS.has(g)) {
+        const r = drawHTML(DRAWS.get(g), kw);
+        return r.hits ? `<div class="entry-g">${esc(g)} <small>(${r.hits})</small></div>` + r.html : "";
+      }
       const hit = people.filter(([nm, u]) => nm.includes(kw) || u.includes(kw));
       return hit.length ? `<div class="entry-g">${esc(g)} <small>(${hit.length})</small></div>` + entryRowsHTML(hit) : "";
     }).join("") || `<div class="empty" style="padding:16px 0">名單中查無「${esc(kw)}」</div>`;
@@ -55,10 +84,15 @@ function renderEntries() {
   grps.hidden = false;
   grps.querySelectorAll(".chip.toggle").forEach(c => c.classList.toggle("on", +c.dataset.i === entrySel));
   if (entrySel < 0) {
-    list.innerHTML = `<div class="note" style="margin:8px 0 0">點上方組別查看該組名單,或直接搜尋姓名/單位</div>`;
+    list.innerHTML = `<div class="note" style="margin:8px 0 0">點上方組別查看該組${
+      DRAWS.size ? "分組籤表" : "名單"},或直接搜尋姓名/單位</div>`;
   } else {
     const [g, people] = ENTRY_GROUPS[entrySel];
-    list.innerHTML = `<div class="entry-g">${esc(g)} <small>(${people.length})</small></div>` + entryRowsHTML(people);
+    const d = DRAWS.get(g);
+    list.innerHTML = d
+      ? `<div class="entry-g">${esc(g)} <small>(${d.pools.reduce((n, p) => n + p.seats.length, 0)} 籤)</small></div>` +
+        drawHTML(d, "").html + drawNote(d)
+      : `<div class="entry-g">${esc(g)} <small>(${people.length})</small></div>` + entryRowsHTML(people);
   }
 }
 
@@ -205,13 +239,16 @@ function render() {
   }
 
   const entries = T.entries || [];
-  if (entries.length) {
+  DRAWS = new Map((T.draws || []).map(d => [d.group, d]));
+  if (entries.length || DRAWS.size) {
     const byGroup = new Map();
     entries.forEach(e => {
       const g = e.group || "其他";
       if (!byGroup.has(g)) byGroup.set(g, []);
       (e.members || []).flatMap(splitMembers).forEach(nm => byGroup.get(g).push([nm, e.unit || ""]));
     });
+    // 團體組籤表只有隊名、沒有隊員,不在 entries 裡,組別要從籤表補進來
+    DRAWS.forEach((_, g) => { if (!byGroup.has(g)) byGroup.set(g, []); });
     ENTRY_GROUPS = [...byGroup.keys()].sort((a, b) => a.localeCompare(b, "zh-Hant"))
       .map(g => [g, byGroup.get(g)]);
     const cov = T.entriesCoverage;
@@ -221,18 +258,22 @@ function render() {
     // 這純粹是顯示層的收合:search-index 由 rebuild_index 直接從賽事 JSON 建,
     // 跟這裡畫不畫、開不開完全無關,搜尋照樣找得到人。
     html += `<details class="card entries-sec">
-      <summary><span>👥 參賽名單</span>
-        <small>${ENTRY_GROUPS.length} 組・${entries.length} 人次</small></summary>
+      <summary><span>👥 參賽名單${DRAWS.size ? "・分組籤表" : ""}</span>
+        <small>${ENTRY_GROUPS.length} 組・${
+          // 算人不算筆:籤表一筆雙打 = 兩人,用筆數會讓同一份名單看起來少了三成
+          ENTRY_GROUPS.reduce((n, [, people]) => n + people.length, 0)} 人次</small></summary>
       <div class="pad">
         <input type="search" id="e-kw" class="entry-kw" placeholder="🔍 在名單中找選手或單位">
         <div id="e-grps">` +
       ENTRY_GROUPS.map(([g, people], i) =>
-        `<span class="chip toggle" data-i="${i}">${esc(g)} <small>${people.length}</small></span>`).join("") +
+        `<span class="chip toggle" data-i="${i}">${esc(g)} <small>${
+          people.length || (DRAWS.has(g) ? DRAWS.get(g).pools.reduce((n, p) => n + p.seats.length, 0) : 0)
+        }</small></span>`).join("") +
       `</div><div id="e-list"></div>
       <div class="note" style="margin-bottom:0">${(() => {
           const srcs = new Set(entries.map(e => e.source || "draw"));
           const parts = [];
-          if (srcs.has("draw")) parts.push("官方賽程表(籤表)");
+          if (srcs.has("draw") || DRAWS.size) parts.push(sourceOf(T) === "lapgo" ? "官方抽籤結果" : "官方賽程表(籤表)");
           if (srcs.has("signup")) parts.push("官方報名結果總表");
           return "名單取自" + parts.join("與");
         })()},用於讓未得名的選手也查得到。名單為賽前版本,可能不含補報名、且含後來棄權者${

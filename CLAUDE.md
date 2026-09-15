@@ -31,7 +31,10 @@
 "entries": [{"group":"U11男單","unit":"北市民權","members":["王綨褘"],"source":"draw"}]
 ```
 
-`source`:`draw`(賽程表籤表,tsba/sportgov)、`signup`(官方報名結果總表,mylivescore)。
+`source`:`draw`(賽程表籤表,tsba/sportgov;**LAPGO 抽籤結果 API**)、`signup`(官方報名結果總表,
+mylivescore / LAPGO 公告的選手名單 PDF)。LAPGO 的抽籤結果另存 `draws[]`
+(`{group,type,format:"pool"|"bracket",pools:[{name,seats:[{pos,unit,members}]}]}`),
+`tournament.html` 在參賽名單裡把預賽畫成一格一小組(同組互為對手)。
 名單動輒上千人次(267404 豐原主委盃 52 組 1105 人次、tsba-2026-清晨盃 7847 人次),
 `tournament.html` 把整段做成可收合的 `details.entries-sec`,**一律預設收起**(2026-09 起;
 以前超過 300 人次才收),展開後組別畫成可換行的小標籤、一次只列一組,另有名單內搜尋框,
@@ -112,6 +115,7 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
 - `scripts/scrape.py` — mylivescore:API 抓取+組別標籤+名次推導(`--full`、`--no-index`)
 - `scripts/scrape_lapgo.py` — lapgo:比分正規化 + 官方成績總表 → standings
   + **賽事公告(最新消息)→ documents**(2026-09 加,選手名單就在那裡)
+  + **抽籤結果 → entries(source=draw)+ draws[]**(2026-09-16 加,開打前的分組籤表)
 - `scripts/scrape_tsba.py` — tsba:文件清單 +(`--stage-results`)備妥成績圖與名冊
 - `scripts/scrape_sportgov.py` — 全運會/全中運官方競賽資訊系統 → 逐場比分 + 官方頒獎名單
   (`official`);資格賽只有籤表 PDF,收 `entries[]`。**不在 update_all 裡**,新一屆才手動跑
@@ -205,9 +209,21 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
   真正的組別是 `session_group_id`,組別名取同 sgid 底下所有 name 的共同前綴。
 - 比分與成績總表的**組別名寫法不一致**(`U10女單` vs `U10歲組女單`),
   `align_groups()` 做一對一貪婪配對;不強制一對一會把多組併成一組。
-- **沒有公開的報名名單「資料」端點**(2026-09 查證,不必再找 API):`js/web.js` 全部 33 個
-  端點裡 `getSessionGroup` 只回組別定義(費用、人數上下限),報名資料在
-  `searchOrder`/`makeOrder` 那條訂單流程後面,不對外。
+- **報名資料**在 `searchOrder`/`makeOrder` 那條訂單流程後面,不對外。
+- ⚠️ **但抽籤結果是公開 API**(2026-09-16 更正:上一版寫「沒有公開的名單端點」是只查了
+  `getSessionGroup` 就下結論,漏了下面這支)。賽事頁 `/web/{slug}/score` 的「預賽籤表/決賽籤表」
+  下拉選單是 JS 即時畫的,HTML 裡沒有人名:`POST /web/getSessionGroup` body `cid=` 取組別
+  (`id` 就是 sid)→ `POST /web/getSessionMapData` body `sid=`。有預賽的組在 `teamData`
+  (`numA1` = A 組第 1 位),純淘汰的組 `teamData` 是空的、籤位在 `final_schedule_map`
+  (`num12`);有預賽的組的 `final_schedule_map` 是預賽後才排的決賽籤,**不可當名單**。
+  籤位值是「單位,姓名 姓名」(沒填單位就只有姓名;搭檔分屬兩校時單位是「甲校/乙校」要拆;
+  外文姓名本身含空白,連續非中文 token 併回一人);團體組(`type=group`)只有隊名、沒有隊員。
+  主辦公告「抽籤結果出爐」時**不附檔**、只給 /score 連結,所以 `news_documents` 永遠收不到,
+  要靠 `scrape_lapgo.draw_data()`:只在**沒有比分**的賽事問(開打後選手已由比分登錄;不限公告期,
+  已結束卻始終沒比分的舊賽事也靠它補名單),
+  拿到完整籤表(籤位 ÷ `total_team_count` ≥ 0.9)就**整份取代** PDF 選手名單 —— 它是名單確認期
+  更正後的版本、組名也和之後的比分一致;`parse_entry_pdf.has_lapgo_draw()` 讓 PDF 名單不再
+  加回去(組名不同,加回去同一批人會登錄兩次)。實測 2024 年已結束的 lapgo-34 也照樣回傳。
 - **但名單有公布,只是藏在「最新消息」裡**(2026-09 補,這是上一條漏掉的半邊):
   `POST /web/getWebContent` body `id={cid}` 回賽事自訂頁面,`type=='news'` 那筆帶
   `news[]`(id/title/updated_at);**清單只有標題,連結要再打
