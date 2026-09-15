@@ -23,16 +23,27 @@
 <script src="./js/common.js"></script>
 <script>
 const name = qs("name");
-let unitIdx, tmap, selected = new Set([name]);
+let unitIdx, tmap, selected = new Set([name]), autoMerged = [];
 const recCache = {};   // unit 名稱 → 完整紀錄(由分片取得)
+const keyCache = new Map();
+function keyOf(u) {
+  if (!keyCache.has(u)) keyCache.set(u, unitKey(u));
+  return keyCache.get(u);
+}
 
 function variantsOf(n) {
-  // 名稱互為包含者視為可能同一單位(如「崑山國小」vs「南市崑山國小」)。
-  // 被包含的一方至少 3 個字,避免「國小」「羽球」這類通用短名混入。
+  // 兩種相近名稱:
+  // (1) 名稱互為包含(如「崑山國小」vs「南市崑山國小」),被包含的一方至少 3 個字,
+  //     避免「國小」「羽球」這類通用短名混入;
+  // (2) unitKey 認得出是同一所學校(「四維國小」vs「中市四維」,彼此不互相包含)。
+  // (2) 排前面:它們是預設合併的對象,不能被 MAXVARIANTS 截掉。
   if (n.length < 2) return [];
+  const k = keyOf(n);
+  const score = u => (sameSchool(k, keyOf(u)) ? 1e6 : 0) + (unitIdx[u] ? unitIdx[u][0] : 0);
   return Object.keys(unitIdx)
-    .filter(u => u !== n && ((n.length >= 3 && u.includes(n)) || (u.length >= 3 && n.includes(u))))
-    .sort((a, b) => (unitIdx[b] ? unitIdx[b][0] : 0) - (unitIdx[a] ? unitIdx[a][0] : 0));
+    .filter(u => u !== n && ((n.length >= 3 && u.includes(n)) || (u.length >= 3 && n.includes(u)) ||
+      sameSchool(k, keyOf(u))))
+    .sort((a, b) => score(b) - score(a));
 }
 
 /* 基準縣市:目前單位名稱的縣市前綴;若沒有,取場次最多且帶縣市前綴的變體。
@@ -51,6 +62,28 @@ function isConflict(v, dom) {
   return !!(dom && c && c !== dom);
 }
 
+/* 預設合併的同校寫法:unitKey 相同、縣市不衝突、學制不衝突。
+   目前名稱沒寫學制(「中市四維」)時,取候選中場次最多的學制為準,
+   免得把「四維國小」和「四維高中」一起併進來。 */
+function sameSchoolVariants(vs) {
+  const k = keyOf(name);
+  // 名稱既沒縣市也沒學制(「中正」「中山」「羽球」)太籠統,各縣市都有,不自動合併
+  if (!k || (!k.county && !k.level)) return [];
+  const cands = vs.filter(v => sameSchool(k, keyOf(v)))
+    .sort((a, b) => (unitIdx[b] ? unitIdx[b][0] : 0) - (unitIdx[a] ? unitIdx[a][0] : 0));
+  const dom = dominantCounty(cands);
+  let level = k ? k.level : "";
+  if (!level) {
+    const tally = {};
+    cands.forEach(v => {
+      const lv = keyOf(v).level;
+      if (lv) tally[lv] = (tally[lv] || 0) + (unitIdx[v] ? unitIdx[v][0] : 0);
+    });
+    level = Object.keys(tally).sort((a, b) => tally[b] - tally[a])[0] || "";
+  }
+  return cands.filter(v => !isConflict(v, dom) && (!level || !keyOf(v).level || keyOf(v).level === level));
+}
+
 const MAXVARIANTS = 40;
 function renderVariants() {
   const all = variantsOf(name);
@@ -59,7 +92,8 @@ function renderVariants() {
   if (!vs.length) { el.innerHTML = ""; return; }
   const dom = dominantCounty(vs);
   const mergeable = vs.filter(v => !isConflict(v, dom));
-  el.innerHTML = `<div class="note">相近名稱(可能是同一單位的不同寫法,點選合併檢視;⚠️ 為縣市前綴不同,可能是同名不同校):</div>` +
+  el.innerHTML = `<div class="note">相近名稱(可能是同一單位的不同寫法,點選合併檢視;⚠️ 為縣市前綴不同,可能是同名不同校)${
+      autoMerged.length ? `。已預設合併 ${autoMerged.length} 個同校寫法,點一下可取消` : ""}:</div>` +
     (mergeable.length ? `<button class="btn-mini" id="merge-all">全部合併(${mergeable.length})</button>` : "") +
     vs.map(v => {
       const tc = unitIdx[v] ? unitIdx[v][0] : 0;
@@ -67,7 +101,7 @@ function renderVariants() {
       return `<span class="chip toggle ${selected.has(v) ? "on" : ""} ${warn ? "warn" : ""}"
         data-u="${esc(v)}">${warn ? "⚠️ " : ""}${esc(v)}・${tc}場</span>`;
     }).join("") +
-    (all.length > MAXVARIANTS ? `<div class="note">相近名稱過多,僅顯示場次最多的前 ${MAXVARIANTS} 個</div>` : "");
+    (all.length > MAXVARIANTS ? `<div class="note">相近名稱過多,僅顯示前 ${MAXVARIANTS} 個</div>` : "");
   el.querySelectorAll(".chip.toggle").forEach(c => c.onclick = () => {
     const u = c.dataset.u;
     selected.has(u) ? selected.delete(u) : selected.add(u);
@@ -88,6 +122,10 @@ async function loadRecs() {
   }));
 }
 
+const AWARD_OPEN = 3;    // 得獎紀錄預設展開最近幾場賽事
+const HIST_PAGE = 10;    // 參賽履歷先顯示幾場
+const dateOf = oid => (tmap[oid]?.dateStart) || "";
+
 async function renderBody() {
   const out = document.getElementById("out");
   out.innerHTML = `<div class="loading">載入中…</div>`;
@@ -107,30 +145,45 @@ async function renderBody() {
   let html = "";
   html += `<div class="note">合併檢視 ${selected.size} 個名稱:參賽 ${Object.keys(byTourn).length} 場・得獎 ${ranks.length} 次${selected.size > 1 ? "。合併結果可能包含同名不同校,請自行判別。" : ""}</div>`;
   if (ranks.length) {
-    ranks.sort((a, b) => ((tmap[b.openid]?.dateStart) || "").localeCompare((tmap[a.openid]?.dateStart) || "") || a.rank - b.rank);
-    html += `<h2 class="sec">🏆 得獎紀錄 <small>(${ranks.length})</small></h2>
-      <div class="card"><table class="plain">
-      <tr><th>名次</th><th>組別</th><th>成員</th><th>賽事</th></tr>` +
-      ranks.map(r => {
-        const t = tmap[r.openid];
-        return `<tr>
+    // 得獎動輒幾十筆,一列一筆很難讀 → 依賽事分塊,最近幾場展開、其餘收起,
+    // 收起時標題列仍看得到金銀銅數量。
+    const byT = new Map();
+    ranks.forEach(r => {
+      if (!byT.has(r.openid)) byT.set(r.openid, []);
+      byT.get(r.openid).push(r);
+    });
+    const groups = [...byT].sort((a, b) => dateOf(b[0]).localeCompare(dateOf(a[0])));
+    html += `<h2 class="sec">🏆 得獎紀錄 <small>(${ranks.length} 個獎項・${groups.length} 場賽事)</small></h2>`;
+    if (groups.length > AWARD_OPEN) html += `<div class="fold-bar">
+      <button class="btn-mini" data-fold="open">全部展開</button>
+      <button class="btn-mini" data-fold="close">全部收合</button></div>`;
+    html += groups.map(([oid, rs], i) => {
+      const t = tmap[oid];
+      rs.sort((a, b) => a.rank - b.rank || String(a.group).localeCompare(String(b.group), "zh-Hant"));
+      const medals = ["🥇", "🥈", "🥉"].map((m, k) => {
+        const c = rs.filter(r => r.rank === k + 1).length;
+        return c ? `${m}${c}` : "";
+      }).filter(Boolean).join(" ");
+      return `<details class="card award-t"${i < AWARD_OPEN ? " open" : ""}>
+        <summary><div class="t"><b>${esc(t ? t.name : oid)}</b>
+          <div class="sub">${t ? fmtDate(t.dateStart) : ""}</div></div>
+          <span class="cnt">${medals}${medals ? "・" : ""}${rs.length} 項</span></summary>
+        <table class="plain"><tr><th>名次</th><th>組別</th><th>成員</th></tr>` +
+        rs.map(r => `<tr>
           <td class="${rankClass(r.rank)}">${esc(rankLabel(r.rank))}</td>
-          <td>${esc(r.group)}</td>
-          <td>${(r.members || []).map(playerLink).join("、") || "—"}</td>
-          <td>${t ? tournLink(r.openid, t.name) : esc(r.openid)}
-            <div class="sub" style="font-size:12px;color:var(--text-2)">${t ? fmtDate(t.dateStart) : ""}</div></td>
-        </tr>`;
-      }).join("") + `</table></div>`;
+          <td>${esc(r.group)}${selected.size > 1 ? `<div style="font-size:12px;color:var(--text-2)">${esc(r.unit)}</div>` : ""}</td>
+          <td>${(r.members || []).map(playerLink).join("、") || "—"}</td></tr>`).join("") +
+        `</table><div class="foot">${tournLink(oid, "賽事頁 ›")}</div></details>`;
+    }).join("");
   }
 
-  const oids = Object.keys(byTourn)
-    .sort((a, b) => ((tmap[b]?.dateStart) || "").localeCompare((tmap[a]?.dateStart) || ""));
+  const oids = Object.keys(byTourn).sort((a, b) => dateOf(b).localeCompare(dateOf(a)));
   html += `<h2 class="sec">📋 參賽履歷 <small>(${oids.length} 場賽事)</small></h2>`;
   if (!oids.length) html += `<div class="empty">無參賽紀錄</div>`;
-  oids.forEach(oid => {
+  const cards = oids.map(oid => {
     const t = tmap[oid], e = byTourn[oid];
     const players = [...e.players].sort((a, b) => a.localeCompare(b, "zh-Hant"));
-    html += `<div class="card"><div class="pad">
+    return `<div class="card"><div class="pad">
       <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
         <b>${t ? tournLink(oid, t.name) : esc(oid)}</b>
         <span class="meta"><span>${t ? fmtDate(t.dateStart) : ""}</span></span>
@@ -139,7 +192,17 @@ async function renderBody() {
       <div>${players.map(p => `<a class="chip" href="./player.html?name=${encodeURIComponent(p)}">${esc(p)}</a>`).join("")}</div>
     </div></div>`;
   });
+  html += cards.slice(0, HIST_PAGE).join("");
+  if (cards.length > HIST_PAGE) {
+    html += `<div id="hist-rest" hidden>${cards.slice(HIST_PAGE).join("")}</div>
+      <button class="btn-more" id="hist-btn">顯示其餘 ${cards.length - HIST_PAGE} 場</button>`;
+  }
   out.innerHTML = html;
+
+  out.querySelectorAll("[data-fold]").forEach(b => b.onclick = () =>
+    out.querySelectorAll("details.award-t").forEach(d => { d.open = b.dataset.fold === "open"; }));
+  const hb = document.getElementById("hist-btn");
+  if (hb) hb.onclick = () => { document.getElementById("hist-rest").hidden = false; hb.remove(); };
 }
 
 async function init() {
@@ -149,10 +212,13 @@ async function init() {
   // variantsOf() 要掃過全部單位名找變體,所以整份 units 索引都要;players 那半用不到。
   const [units, _tmap] = await Promise.all([loadSearchUnits(), tournMap()]);
   unitIdx = units; tmap = _tmap;
-  if (!unitIdx[name]) {
+  const vs = variantsOf(name);
+  // 同校的不同寫法預設就合併(「四維國小」「中市四維」…),不然使用者只看到其中一半
+  autoMerged = sameSchoolVariants(vs.slice(0, MAXVARIANTS));
+  autoMerged.forEach(v => selected.add(v));
+  if (!unitIdx[name] && !autoMerged.length) {
     document.getElementById("out").innerHTML = `<div class="empty">查無單位「${esc(name)}」</div>`;
-    const vs = variantsOf(name);
-    if (vs.length) { renderVariants(); }
+    if (vs.length) renderVariants();
     return;
   }
   renderVariants();

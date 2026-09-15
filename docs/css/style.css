@@ -278,9 +278,29 @@ details.entries-sec[open] > summary::after { content: "▾"; }
 details.entries-sec[open] > summary { border-bottom: 1px solid var(--line); }
 details.entries-sec > .pad { padding-top: 10px; }
 
-/* 參賽名單:組別可收合,人多時不會塞爆頁面 */
-details.entry-grp > summary {
-  cursor: pointer; padding: 6px 2px; font-weight: 600;
-  border-bottom: 1px solid var(--line);
+/* 參賽名單:組別畫成小標籤、一次只展開一組,人多時不會塞爆頁面 */
+.entry-kw {
+  width: 100%; box-sizing: border-box; margin-bottom: 10px; padding: 8px 12px;
+  border: 1px solid var(--line); border-radius: 10px;
+  font: inherit; color: inherit; background: transparent;
 }
-details.entry-grp > summary small { font-weight: 400; color: var(--text-2); }
+#e-grps .chip small { opacity: .7; font-weight: 400; }
+.entry-g { font-weight: 600; margin: 12px 0 4px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.entry-g small { font-weight: 400; color: var(--text-2); }
+.entry-row { display: flex; flex-wrap: wrap; align-items: baseline; padding: 2px 0; }
+.entry-row .u { font-size: 12.5px; color: var(--text-2); min-width: 6em; margin-right: 6px; }
+
+/* 單位頁得獎紀錄:依賽事收合 */
+details.award-t > summary {
+  cursor: pointer; user-select: none; list-style: none;
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+}
+details.award-t > summary::-webkit-details-marker { display: none; }
+details.award-t > summary .t { flex: 1; min-width: 0; }
+details.award-t > summary .sub { font-size: 12px; color: var(--text-2); }
+details.award-t > summary .cnt { font-size: 13px; color: var(--text-2); white-space: nowrap; }
+details.award-t > summary::after { content: "▸"; color: var(--text-2); font-size: 13px; }
+details.award-t[open] > summary::after { content: "▾"; }
+details.award-t[open] > summary { border-bottom: 1px solid var(--line); }
+details.award-t .foot { padding: 6px 14px 10px; font-size: 13px; }
+.fold-bar { display: flex; gap: 6px; justify-content: flex-end; margin: -4px 0 8px; }

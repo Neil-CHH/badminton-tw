@@ -23,11 +23,44 @@
 <script>
 const oid = qs("id");
 const PAGE = 150;
-/* 參賽名單超過這個人次就預設收起。目前庫裡 16 場有名單的賽事最少也有 378 人次
-   (285271 竹南鎮長盃),所以實務上全部都是收起的;門檻留著是為了將來真的很小的
-   名單不要被沒必要地藏起來 —— 那種攤開也才十幾列,收起反而讓頁面看起來是空的。 */
-const ENTRY_FOLD = 300;
 let T = null, shown = PAGE;
+/* 參賽名單:[[組別, [[姓名, 單位], …]], …];entrySel 為目前展開的組別索引(-1 = 都沒展開) */
+let ENTRY_GROUPS = [], entrySel = -1;
+
+/* 同單位的人併成一列(單位照名單出現順序),比一人一格的長串好掃 */
+function entryRowsHTML(people) {
+  const byUnit = new Map();
+  people.forEach(([nm, u]) => {
+    if (!byUnit.has(u)) byUnit.set(u, []);
+    byUnit.get(u).push(nm);
+  });
+  return [...byUnit].map(([u, nms]) => `<div class="entry-row"><span class="u">${esc(u || "—")}</span>` +
+    nms.map(nm => `<a class="chip" href="./player.html?name=${encodeURIComponent(nm)}">${esc(nm)}</a>`).join("") +
+    `</div>`).join("");
+}
+
+/* 組別一律畫成可換行的小標籤,一次只展開一組;有關鍵字時改成跨組搜尋結果 */
+function renderEntries() {
+  const kw = document.getElementById("e-kw").value.trim();
+  const grps = document.getElementById("e-grps");
+  const list = document.getElementById("e-list");
+  if (kw) {
+    grps.hidden = true;
+    list.innerHTML = ENTRY_GROUPS.map(([g, people]) => {
+      const hit = people.filter(([nm, u]) => nm.includes(kw) || u.includes(kw));
+      return hit.length ? `<div class="entry-g">${esc(g)} <small>(${hit.length})</small></div>` + entryRowsHTML(hit) : "";
+    }).join("") || `<div class="empty" style="padding:16px 0">名單中查無「${esc(kw)}」</div>`;
+    return;
+  }
+  grps.hidden = false;
+  grps.querySelectorAll(".chip.toggle").forEach(c => c.classList.toggle("on", +c.dataset.i === entrySel));
+  if (entrySel < 0) {
+    list.innerHTML = `<div class="note" style="margin:8px 0 0">點上方組別查看該組名單,或直接搜尋姓名/單位</div>`;
+  } else {
+    const [g, people] = ENTRY_GROUPS[entrySel];
+    list.innerHTML = `<div class="entry-g">${esc(g)} <small>(${people.length})</small></div>` + entryRowsHTML(people);
+  }
+}
 
 function matchSideHTML(m, side, isWinner) {
   const unit = m["team" + side] || "";
@@ -179,25 +212,24 @@ function render() {
       if (!byGroup.has(g)) byGroup.set(g, []);
       (e.members || []).flatMap(splitMembers).forEach(nm => byGroup.get(g).push([nm, e.unit || ""]));
     });
-    const gs = [...byGroup.keys()].sort((a, b) => a.localeCompare(b, "zh-Hant"));
+    ENTRY_GROUPS = [...byGroup.keys()].sort((a, b) => a.localeCompare(b, "zh-Hant"))
+      .map(g => [g, byGroup.get(g)]);
     const cov = T.entriesCoverage;
     // 名單動輒上千人次(豐原主委盃 52 組 1105 人次、tsba 清晨盃 7847 人次),攤開會把
-    // 底下的組別與逐場比分整個推到看不見的地方 → 整段做成可收合,長名單預設收起。
+    // 底下的組別與逐場比分整個推到看不見的地方 → 整段一律預設收起;展開後組別也只畫成
+    // 一排排小標籤(以前一組一列,27 組就是 27 列),點一組才列出該組名單。
     // 這純粹是顯示層的收合:search-index 由 rebuild_index 直接從賽事 JSON 建,
     // 跟這裡畫不畫、開不開完全無關,搜尋照樣找得到人。
-    const folded = entries.length > ENTRY_FOLD;
-    html += `<details class="card entries-sec"${folded ? "" : " open"}>
+    html += `<details class="card entries-sec">
       <summary><span>👥 參賽名單</span>
-        <small>${gs.length} 組・${entries.length} 人次</small></summary>
-      <div class="pad">` +
-      gs.map(g => {
-        const people = byGroup.get(g);
-        return `<details class="entry-grp"><summary>${esc(g)} <small>(${people.length})</small></summary>
-          <div style="margin:6px 0 10px">` +
-          people.map(([nm, u]) => `<a class="chip" href="./player.html?name=${encodeURIComponent(nm)}"
-            title="${esc(u)}">${esc(nm)}</a>`).join("") + `</div></details>`;
-      }).join("") +
-      `<div class="note" style="margin-bottom:0">${(() => {
+        <small>${ENTRY_GROUPS.length} 組・${entries.length} 人次</small></summary>
+      <div class="pad">
+        <input type="search" id="e-kw" class="entry-kw" placeholder="🔍 在名單中找選手或單位">
+        <div id="e-grps">` +
+      ENTRY_GROUPS.map(([g, people], i) =>
+        `<span class="chip toggle" data-i="${i}">${esc(g)} <small>${people.length}</small></span>`).join("") +
+      `</div><div id="e-list"></div>
+      <div class="note" style="margin-bottom:0">${(() => {
           const srcs = new Set(entries.map(e => e.source || "draw"));
           const parts = [];
           if (srcs.has("draw")) parts.push("官方賽程表(籤表)");
@@ -234,6 +266,16 @@ function render() {
   }
 
   document.getElementById("out").innerHTML = html;
+  if (ENTRY_GROUPS.length) {
+    document.getElementById("e-kw").oninput = renderEntries;
+    document.getElementById("e-grps").onclick = ev => {
+      const c = ev.target.closest(".chip.toggle");
+      if (!c) return;
+      entrySel = entrySel === +c.dataset.i ? -1 : +c.dataset.i;
+      renderEntries();
+    };
+    renderEntries();
+  }
   if ((T.matches || []).length) {
     document.getElementById("m-group").onchange = () => { shown = PAGE; renderMatches(); };
     document.getElementById("m-kw").oninput = () => { shown = PAGE; renderMatches(); };

@@ -171,6 +171,38 @@ function countyOf(unitName) {
   return "";
 }
 
+/* 單位名稱正規化成 { county, core, level },用來認出同一所學校的不同寫法:
+   「四維國小」「中市四維」「臺中市北屯區四維國民小學」「四維國小A」→ core 都是「四維」。
+   county 空 = 沒寫縣市、level 空 = 沒寫學制,兩者都視為「相容」而非「不同」。
+   雙打搭檔併列的「甲校/乙校」不是單一單位,回 null。 */
+const LEVEL_SUFFIX = [
+  [/(國民小學|國民小|國小|小學)$/, "小"],
+  [/(國民中學|國中)$/, "中"],
+  [/(高級中等學校|高級中學|高中)$/, "高"],
+  [/大學$/, "大"],
+];
+function unitKey(unitName) {
+  let s = String(unitName || "").trim();
+  if (!s || /[\/／、]/.test(s)) return null;
+  let county = "";
+  for (const [prefix, canon] of COUNTY_PREFIXES) {
+    if (s.startsWith(prefix)) { county = canon; s = s.slice(prefix.length); break; }
+  }
+  if (county) s = s.replace(/^[一-鿿]{1,2}[區鄉鎮](?=[一-鿿]{2})/, "");  // 北屯區
+  // 分隊 A/B(不用 lookbehind:iOS 16.4 以前的 Safari 會整支 common.js 語法錯誤)
+  s = s.replace(/([一-鿿])[A-Za-zＡ-Ｚ0-9]$/, "$1");
+  let level = "";
+  for (const [re, lv] of LEVEL_SUFFIX) {
+    if (re.test(s)) { level = lv; s = s.replace(re, ""); break; }
+  }
+  return { county, core: s, level };
+}
+/* 兩個 unitKey 是否可能是同一所學校(縣市另由呼叫端依情境判斷) */
+function sameSchool(a, b) {
+  return !!(a && b && a.core.length >= 2 && a.core === b.core &&
+    (!a.level || !b.level || a.level === b.level));
+}
+
 function playerLink(name) {
   return `<a href="./player.html?name=${encodeURIComponent(name)}">${esc(name)}</a>`;
 }

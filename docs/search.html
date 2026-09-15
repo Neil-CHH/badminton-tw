@@ -21,7 +21,7 @@
 </main>
 <script src="./js/common.js"></script>
 <script>
-let idxDB = null, loadingP = null;
+let idxDB = null, loadingP = null, unitKeys = null;
 const MAXSHOW = 60;
 
 function ensureData() {
@@ -43,8 +43,17 @@ async function doSearch() {
   }
   const players = Object.keys(idxDB.players)
     .filter(n => n.includes(q)).sort((a, b) => a.localeCompare(b, "zh-Hant"));
+  // 除了子字串,也收同一所學校的其他寫法:搜「四維國小」要能找到「中市四維」、
+  // 「臺中市北屯區四維國民小學」(兩者都不含「四維國小」這串字)。縣市有寫且不同的不收。
+  const qk = unitKey(q);
+  unitKeys ||= new Map(Object.keys(idxDB.units).map(n => [n, unitKey(n)]));
   const units = Object.keys(idxDB.units)
-    .filter(n => n.includes(q)).sort((a, b) => a.localeCompare(b, "zh-Hant"));
+    .filter(n => {
+      if (n.includes(q)) return true;
+      const k = unitKeys.get(n);
+      return sameSchool(qk, k) && (!qk.county || !k.county || qk.county === k.county);
+    })
+    .sort((a, b) => a.localeCompare(b, "zh-Hant"));
 
   let html = "";
   if (units.length) {
