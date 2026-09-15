@@ -125,6 +125,10 @@ async function loadRecs() {
 const AWARD_OPEN = 3;    // 得獎紀錄預設展開最近幾場賽事
 const HIST_PAGE = 10;    // 參賽履歷先顯示幾場
 const dateOf = oid => (tmap[oid]?.dateStart) || "";
+/* 整段(得獎紀錄/參賽履歷)預設展開;使用者收起過就沿用 */
+function secOpen(key) {
+  try { return localStorage.getItem(`unit-fold-${key}`) !== "0"; } catch (e) { return true; }
+}
 
 async function renderBody() {
   const out = document.getElementById("out");
@@ -153,7 +157,8 @@ async function renderBody() {
       byT.get(r.openid).push(r);
     });
     const groups = [...byT].sort((a, b) => dateOf(b[0]).localeCompare(dateOf(a[0])));
-    html += `<h2 class="sec">🏆 得獎紀錄 <small>(${ranks.length} 個獎項・${groups.length} 場賽事)</small></h2>`;
+    html += `<details class="sec-fold" data-sec="awards"${secOpen("awards") ? " open" : ""}>
+      <summary>🏆 得獎紀錄 <small>(${ranks.length} 個獎項・${groups.length} 場賽事)</small></summary>`;
     if (groups.length > AWARD_OPEN) html += `<div class="fold-bar">
       <button class="btn-mini" data-fold="open">全部展開</button>
       <button class="btn-mini" data-fold="close">全部收合</button></div>`;
@@ -174,11 +179,12 @@ async function renderBody() {
           <td>${esc(r.group)}${selected.size > 1 ? `<div style="font-size:12px;color:var(--text-2)">${esc(r.unit)}</div>` : ""}</td>
           <td>${(r.members || []).map(playerLink).join("、") || "—"}</td></tr>`).join("") +
         `</table><div class="foot">${tournLink(oid, "賽事頁 ›")}</div></details>`;
-    }).join("");
+    }).join("") + `</details>`;
   }
 
   const oids = Object.keys(byTourn).sort((a, b) => dateOf(b).localeCompare(dateOf(a)));
-  html += `<h2 class="sec">📋 參賽履歷 <small>(${oids.length} 場賽事)</small></h2>`;
+  html += `<details class="sec-fold" data-sec="history"${secOpen("history") ? " open" : ""}>
+    <summary>📋 參賽履歷 <small>(${oids.length} 場賽事)</small></summary>`;
   if (!oids.length) html += `<div class="empty">無參賽紀錄</div>`;
   const cards = oids.map(oid => {
     const t = tmap[oid], e = byTourn[oid];
@@ -197,8 +203,13 @@ async function renderBody() {
     html += `<div id="hist-rest" hidden>${cards.slice(HIST_PAGE).join("")}</div>
       <button class="btn-more" id="hist-btn">顯示其餘 ${cards.length - HIST_PAGE} 場</button>`;
   }
+  html += `</details>`;
   out.innerHTML = html;
 
+  // 整段收合的選擇記在這台瀏覽器:單位參賽越多、得獎紀錄越長,收起來的人下次打開不必再收一次
+  out.querySelectorAll("details.sec-fold").forEach(d => d.ontoggle = () => {
+    try { localStorage.setItem(`unit-fold-${d.dataset.sec}`, d.open ? "1" : "0"); } catch (e) { /* 無痕模式等 */ }
+  });
   out.querySelectorAll("[data-fold]").forEach(b => b.onclick = () =>
     out.querySelectorAll("details.award-t").forEach(d => { d.open = b.dataset.fold === "open"; }));
   const hb = document.getElementById("hist-btn");

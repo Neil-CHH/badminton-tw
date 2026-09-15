@@ -312,3 +312,13 @@ details.award-t[open] > summary::after { content: "▾"; }
 details.award-t[open] > summary { border-bottom: 1px solid var(--line); }
 details.award-t .foot { padding: 6px 14px 10px; font-size: 13px; }
 .fold-bar { display: flex; gap: 6px; justify-content: flex-end; margin: -4px 0 8px; }
+
+/* 單位頁整段收合(得獎紀錄/參賽履歷),summary 樣式對齊 h2.sec */
+details.sec-fold > summary {
+  cursor: pointer; user-select: none; list-style: none;
+  font-size: 15px; font-weight: 700; margin: 18px 2px 8px; color: var(--primary-dark);
+}
+details.sec-fold > summary::-webkit-details-marker { display: none; }
+details.sec-fold > summary small { color: var(--text-2); font-weight: 400; }
+details.sec-fold > summary::before { content: "▸ "; color: var(--text-2); font-size: 13px; }
+details.sec-fold[open] > summary::before { content: "▾ "; }
