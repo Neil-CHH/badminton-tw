@@ -116,6 +116,7 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
 - `scripts/scrape_lapgo.py` — lapgo:比分正規化 + 官方成績總表 → standings
   + **賽事公告(最新消息)→ documents**(2026-09 加,選手名單就在那裡)
   + **抽籤結果 → entries(source=draw)+ draws[]**(2026-09-16 加,開打前的分組籤表)
+  + **賽程 → schedule[]**(2026-09-23 加,開打前的日期/時間/對戰;沒有場地)
 - `scripts/scrape_tsba.py` — tsba:文件清單 +(`--stage-results`)備妥成績圖與名冊
 - `scripts/scrape_sportgov.py` — 全運會/全中運官方競賽資訊系統 → 逐場比分 + 官方頒獎名單
   (`official`);資格賽只有籤表 PDF,收 `entries[]`。**不在 update_all 裡**,新一屆才手動跑
@@ -449,14 +450,40 @@ python -m http.server 8765 -d docs   # 本地預覽
   746611 拿男雙冠軍、單打團體亞軍、雙打團體亞軍,官方規程確認是三個獨立報名的項目)。
   但 player.html 的 🏆 成績總覽每列都印賽名,同一個賽名連著出現好幾次很容易被當成資料重複,
   所以賽事欄用 `rowspan` 併成一格,標題也寫成「N 個獎項・M 場賽事」。
+- **tournament.html 的分段收納(2026-09)**:賽程 → 參賽名單 → 競賽組別 → 逐場比分,
+  前三段一律 `details.entries-sec` **預設收起**(賽程 1409 場、名單上千人次、組別 52 個,
+  任一段攤開都會把逐場比分推到看不見)。賽程排在名單之前:抽籤後開打前,「幾點打、跟誰打」
+  比「有誰報名」即時。純顯示層,不影響搜尋。
+- **`groups[].drawUrl` 有一半是死連結(2026-09-23 實測)** —— mylivescore 的
+  `livescore.mylivescore.tw/draws/{openid}/{groupid}.html`,通的時候是**真的籤表頁**
+  (絕對定位的籤表樹,有選手、單位,還印著「取4名」),但抽樣 75 組:已結束 40% 通 / 48% 404,
+  進行中 4% 通 / 72% 404,**未開打 0% 通 / 84% 404**(籤表頁要等主辦產生才存在)。
+  使用者從未開打的賽事點進去必然全死。lapgo 的 drawUrl 是賽事頁 `/score`(不是單組籤表)。
+  尚未處理,選項見對話紀錄:全移除 / 只留已結束 / 爬蟲驗證後只留活的。
 - **unit.html 的長度控制(2026-09)**:單位得獎動輒上百筆(四維國小 113 個獎項・36 場),
   得獎紀錄**依賽事分塊**(`details.award-t`,最近 `AWARD_OPEN`=3 場展開,收起時標題列仍有
   🥇🥈🥉 數量);「得獎紀錄」「參賽履歷」兩段再各自**整段可收合**(`details.sec-fold`),
   收合狀態存 localStorage(`unit-fold-awards` / `unit-fold-history`,讀寫都包 try/catch);
   參賽履歷先畫 `HIST_PAGE`=10 場。同校寫法由 `unitKey()` **預設合併**(見資料模型重點)。
-- **LAPGO 賽程(時間/場地)還沒接**:抽籤後、比分前的賽程在 `/web/searchSession`
-  (`cid, date, group, keyword`),開打前回 `[]`、格式未驗證。**未打的場次不可放進 `matches[]`**
-  —— 沒有勝負會被 rebuild_index 算進出賽統計,要另開欄位顯示。
+- **LAPGO 賽程已接(2026-09-23)**,寫進 `schedule[]`,見 `scrape_lapgo.schedule_data`。
+  `POST /web/searchSession` body `cid=`(`date/group/keyword` 可省)。抽籤後、比分前
+  唯一拿得到比賽時間的地方 —— 籤表 API 只給分組不給時間(大佛盃 9/22 18:55 排定、10/09 開打)。
+  **只有時間,沒有場地** —— `place_name` 是**日期**不是場地(大佛盃三個值 1009/1010/1011
+  對應 10/09~10/11)、`place_num` 實測全 null。舊版這條寫「時間/場地」是錯的。
+  ⚠️ **`type` 的語意與比分 API 不同,絕不可套 `MATCHTYPE_MAP`**:比分裡「決賽」= 冠軍賽,
+  賽程裡冠軍賽寫 `R2`(每組正好 1 筆),而「決賽」指預賽之後的**決賽階段**、每組數筆
+  (大佛盃 98 筆,數量 = 該組小組數)。套下去會把 98 場全標成冠軍賽。原樣保留只當顯示標籤,
+  `tournament.html` 的 `SCHED_TYPE` 只翻譯有把握的(R2→冠軍賽、決賽→決賽階段),
+  沒把握的代號(lapgo-154 的 `R3`)原樣顯示。
+  ⚠️ **只有預賽排得出對戰雙方**(大佛盃 1074/1409),R2/R4/R8/R16 與「決賽」的
+  `team_players` 是空的、要等預賽結束,照收但不寫 `sides`,前端顯示「對戰組合待預賽結束後確定」。
+  **未打的場次不可放進 `matches[]`** —— 沒有勝負會被 rebuild_index 算進出賽統計。
+  `schedule` 是獨立欄位,索引與分片一概不讀。
+  **`schedule` 刻意不從 existing 帶過去**(與 `draws` 相反):比分一上線 `matches` 自己就帶
+  日期與結果,這份「未打場次的預定時間」就成了會過期的噪音,讓它隨重抓自然消失;
+  但該月讀取失敗(回空)時保留既有的,免得一次失敗就清光。只在沒有比分的賽事問。
+  實測 62 場 lapgo 裡只有開打前 1~2 週的賽事排得出來(2026-09-23 只有 lapgo-128、lapgo-154),
+  其餘未開打的 8 場回 `[]`。
 - **檔案大小一律看 gzip,不要看磁碟上的 raw** —— GitHub Pages 對 .json 有 gzip,
   實際傳輸約是 raw 的 1/3(search-index-players 2043KB→669KB、players 分片 1198KB→196KB)。
   `rebuild_index` 印的是 raw,拿它評估使用者流量會高估三倍。

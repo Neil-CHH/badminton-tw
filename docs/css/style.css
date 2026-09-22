@@ -215,6 +215,19 @@ table.plain td[rowspan] { vertical-align: top; }
 .hist > summary .when { color: var(--text-2); font-weight: 400; font-size: 13px; white-space: nowrap; }
 .hist .body { border-top: 1px solid var(--line); }
 
+/* 賽程列:比 .mrow 簡單(沒有比分/局分),但左右對戰的骨架一樣 */
+.srow { border-bottom: 1px solid var(--line); padding: 9px 2px; }
+.srow:last-child { border-bottom: none; }
+.srow .head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  font-size: 12.5px; color: var(--text-2); margin-bottom: 4px; }
+.srow .tag { background: var(--chip-bg); border-radius: 4px; padding: 0 5px; margin-right: 6px; }
+.srow .vs { display: flex; align-items: center; gap: 8px; }
+.srow .side { flex: 1; min-width: 0; font-size: 14.5px; }
+.srow .side.B { text-align: right; }
+.srow .side .unit { font-size: 12px; color: var(--text-2); }
+.srow .vs-x { font-size: 12px; color: var(--text-2); flex: none; }
+.srow .tbd { font-size: 13.5px; color: var(--text-2); }
+
 .note { color: var(--text-2); font-size: 13px; margin: 8px 2px; }
 .empty { text-align: center; color: var(--text-2); padding: 40px 0; }
 .loading { text-align: center; color: var(--text-2); padding: 30px 0; }

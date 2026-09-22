@@ -582,6 +582,65 @@ def draw_data(api, info):
     return entries, draws, coverage
 
 
+def schedule_data(api, info):
+    """賽程(日期 / 時間 / 對戰雙方)→ schedule[]。
+
+    `POST /web/searchSession` body `cid=` 回整場的場次表。這是開打前唯一拿得到
+    比賽時間的地方 —— 籤表 API(getSessionMapData)只給分組,不給時間
+    (lapgo-128 大佛盃 2026-09-22 18:55 排定賽程、10-09 才開打)。
+
+    四個坑:
+
+    (a) **`type` 的語意與比分 API 不同,絕不可套 `MATCHTYPE_MAP`** ——
+        比分裡「決賽」= 冠軍賽,賽程裡冠軍賽寫 `R2`(每組正好 1 筆),而「決賽」
+        指的是預賽之後的**決賽階段**、每組數筆(lapgo-128 共 98 筆,數量等於該組的
+        小組數)。套那張表會把 98 場全標成冠軍賽。故原樣保留,只當顯示標籤。
+    (b) **`place_name` 是日期不是場地** —— lapgo-128 的三個值是 1009/1010/1011,
+        對應 10/09~10/11;`place_num` 實測全 null。**這支拿不到場地/球場編號**,
+        時間有、場地沒有。
+    (c) **只有預賽排得出對戰雙方** —— R2/R4/R8/R16 與「決賽」的 `team_players`
+        是 `[{"team":"","player":[]}, ...]`(要等預賽結束才定人)。照收(時間本身
+        就有用:知道自己晉級後幾點打),但不寫 sides。
+    (d) **不可進 `matches[]`** —— 未打的場次沒有勝負,rebuild_index 會把它算進
+        出賽統計。schedule 是獨立欄位,索引與分片一概不讀。
+
+    已有比分的賽事不必問:這支對它們同樣回傳,但比分已由 getSessionScoreGrouped
+    收齊、而且帶日期,重複抓只是多一份不會被讀的資料。
+    """
+    try:
+        rows = api.post("/web/searchSession", {"cid": str(info["id"])})
+    except Exception as e:                                    # noqa: BLE001
+        print(f"  [提醒] lapgo-{info['id']} 賽程讀取失敗:{e}")
+        return []
+    if not isinstance(rows, list) or not rows:
+        return []                                             # 還沒排賽程
+
+    gnames = canonical_group_names(rows)
+    out = []
+    for r in rows:
+        start = r.get("start_datetime") or ""
+        if len(start) < 16:
+            continue                       # 沒有時間的列對使用者沒有意義
+        g = gnames.get(r.get("session_group_id")) or ""
+        nm = str(r.get("name") or "").strip()
+        # 場次代號:優先用 sub_group_index(A1-A2),沒有就取 name 剝掉組別前綴的殘留((一))
+        label = str(r.get("sub_group_index") or "").strip()
+        if not label and g and nm.startswith(g):
+            label = nm[len(g):].strip()
+        item = {"group": g, "date": start[:10], "time": start[11:16],
+                "type": str(r.get("type") or "").strip(), "label": label}
+        sides = []
+        for t in _load_tp(r):
+            members = [unquote(str(m)).strip() for m in (t.get("player") or [])]
+            sides.append({"unit": unquote(str(t.get("team") or "")).strip(),
+                          "members": [m for m in members if m]})
+        if len(sides) == 2 and any(s["members"] or s["unit"] for s in sides):
+            item["sides"] = sides          # 待定場次不寫,前端據此顯示「預賽後定」
+        out.append(item)
+    out.sort(key=lambda x: (x["date"], x["time"], x["group"], x["label"]))
+    return out
+
+
 def load_existing(openid):
     p = TOURN_DIR / f"{openid}.json"
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
@@ -674,6 +733,17 @@ def build_record(api, info, existing, with_news=True):
                 for dr in draws
             ]
 
+        # 賽程:抽籤之後、比分之前才有意義(見 schedule_data)。
+        # **刻意不從 existing 帶過去** —— 比分一上線,matches 自己就帶日期與結果,
+        # 這份「未打場次的預定時間」就成了會過期的噪音,讓它隨著重抓自然消失。
+        # 但這個月讀取失敗(回空)時要保留既有的,免得一次失敗就把賽程清光。
+        sched = schedule_data(api, info)
+        time.sleep(0.4)
+        if sched:
+            record["schedule"] = sched
+        elif (existing or {}).get("schedule"):
+            record["schedule"] = existing["schedule"]
+
     # 官方成績總表優先於推導名次;總表沒涵蓋的組別再用 derive_standings 補
     incoming = []
     summary = api.results_summary(cid)
@@ -741,6 +811,10 @@ def main():
             detail += f"、{len(record['documents'])} 筆公告文件"
         if record.get("draws"):
             detail += f"、籤表 {len(record['draws'])} 組 {len(record.get('entries') or [])} 人次"
+        if record.get("schedule"):
+            sc = record["schedule"]
+            days = len({x["date"] for x in sc})
+            detail += f"、賽程 {len(sc)} 場 {days} 天"
         if dry:
             print(f"  [{label}(dry)] {openid} {record['name'][:30]} ({detail})")
             continue

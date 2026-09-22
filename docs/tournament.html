@@ -26,6 +26,8 @@ const PAGE = 150;
 let T = null, shown = PAGE;
 /* 參賽名單:[[組別, [[姓名, 單位], …]], …];entrySel 為目前展開的組別索引(-1 = 都沒展開) */
 let ENTRY_GROUPS = [], entrySel = -1;
+/* 賽程:schedDay 為目前選的日期("" = 全部),schedShown 為已畫筆數 */
+let SCHED = [], schedShown = PAGE, schedDay = "";
 let DRAWS = new Map();   // 組別 → 抽籤結果(LAPGO 開打前的分組籤表)
 
 /* 抽籤結果:預賽畫成一格一小組(同組互為對手),純淘汰畫成籤位順序。
@@ -46,7 +48,10 @@ function drawHTML(d, kw) {
   return { hits, html: pools ? `<div class="pool-grid">${pools}</div>` : "" };
 }
 function drawNote(d) {
-  const tail = (T.matches || []).length ? "" : "比賽時間與場地待官方公布賽程。";
+  // 賽程公布後這句就不該再出現(大佛盃 9/22 排定賽程);官方賽程只有時間、沒有場地。
+  const tail = (T.matches || []).length ? ""
+    : (T.schedule || []).length ? "比賽時間見上方賽程,官方未提供場地。"
+    : "比賽時間與場地待官方公布賽程。";
   return `<div class="note" style="margin:4px 0 0">${d.format === "pool"
     ? "預賽為小組循環,同組互為對手;預賽後的決賽籤表待預賽結束才產生。"
     : "依籤位順序排列(輪空不列出),實際對戰以官方籤表為準。"}${tail}</div>`;
@@ -62,6 +67,57 @@ function entryRowsHTML(people) {
   return [...byUnit].map(([u, nms]) => `<div class="entry-row"><span class="u">${esc(u || "—")}</span>` +
     nms.map(nm => `<a class="chip" href="./player.html?name=${encodeURIComponent(nm)}">${esc(nm)}</a>`).join("") +
     `</div>`).join("");
+}
+
+/* LAPGO 賽程的 type 直接來自來源,**不是**比分那套 matchtype(見 scrape_lapgo.schedule_data):
+   來源自己把冠軍賽寫成 R2,而「決賽」指的是預賽之後的決賽階段(每組數筆)。
+   兩者同頁出現會互相混淆,所以只在顯示層把「決賽」講成「決賽階段」;
+   沒把握的代號(R3…)一律原樣顯示,不亂猜。 */
+const SCHED_TYPE = { "R2": "冠軍賽", "R4": "四強", "R8": "八強", "R16": "十六強",
+                     "R32": "三十二強", "R64": "六十四強", "決賽": "決賽階段" };
+const WEEK = ["日", "一", "二", "三", "四", "五", "六"];
+
+function schedDayLabel(d) {
+  const [y, m, dd] = d.split("-").map(Number);
+  return `${m}/${dd}(${WEEK[new Date(y, m - 1, dd).getDay()]})`;
+}
+
+function schedRow(x) {
+  const t = SCHED_TYPE[x.type] || x.type || "";
+  const s = x.sides;
+  const side = i => `<div class="side${i ? " B" : ""}">` +
+    (s[i].members.length
+      ? s[i].members.map(m => `<a href="./player.html?name=${encodeURIComponent(m)}">${esc(m)}</a>`).join("、")
+      : `<b>${esc(s[i].unit || "—")}</b>`) +
+    (s[i].members.length && s[i].unit ? `<div class="unit">${esc(s[i].unit)}</div>` : "") + `</div>`;
+  return `<div class="srow">
+    <div class="head"><span>${esc(x.group)}${x.label ? " " + esc(x.label) : ""}</span>
+      <span>${t ? `<span class="tag">${esc(t)}</span>` : ""}${schedDayLabel(x.date)} ${esc(x.time)}</span></div>
+    ${s ? `<div class="vs">${side(0)}<div class="vs-x">vs</div>${side(1)}</div>`
+        : `<div class="tbd">對戰組合待預賽結束後確定</div>`}
+  </div>`;
+}
+
+function filteredSchedule() {
+  const kw = document.getElementById("s-kw")?.value.trim() || "";
+  const grp = document.getElementById("s-group")?.value || "";
+  let rows = SCHED;
+  if (schedDay) rows = rows.filter(x => x.date === schedDay);
+  if (grp) rows = rows.filter(x => x.group === grp);
+  if (kw) rows = rows.filter(x => (x.sides || []).some(sd =>
+    sd.unit.includes(kw) || sd.members.some(m => m.includes(kw))));
+  return rows;
+}
+
+function renderSchedule() {
+  const rows = filteredSchedule();
+  document.getElementById("slist").innerHTML =
+    rows.slice(0, schedShown).map(schedRow).join("") || `<div class="empty">無符合的場次</div>`;
+  const more = document.getElementById("s-more");
+  if (rows.length > schedShown) {
+    more.style.display = "block";
+    more.textContent = `顯示更多(${schedShown} / ${rows.length})`;
+  } else more.style.display = "none";
 }
 
 /* 組別一律畫成可換行的小標籤,一次只展開一組;有關鍵字時改成跨組搜尋結果 */
@@ -238,6 +294,33 @@ function render() {
       })()}${anyPromo ? "標「晉甲」者為晉升中華民國羽球協會甲組之選手。" : ""}</div>`;
   }
 
+  // 賽程:抽籤後、開打前最即時的資訊(幾點打、跟誰打),所以排在參賽名單之前。
+  // 但筆數和名單同級(大佛盃 1409 場),一樣整段預設收起,免得把底下的東西推到看不見。
+  SCHED = T.schedule || [];
+  if (SCHED.length) {
+    const days = [...new Set(SCHED.map(x => x.date))].sort();
+    const sgrps = [...new Set(SCHED.map(x => x.group))].filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, "zh-Hant"));
+    const tbd = SCHED.filter(x => !x.sides).length;
+    schedDay = days[0] || "";
+    html += `<details class="card entries-sec">
+      <summary><span>🗓️ 賽程</span><small>${days.length} 天・${SCHED.length} 場</small></summary>
+      <div class="pad">
+        <div class="filters">
+          <select id="s-day">${days.map(d =>
+            `<option value="${d}">${schedDayLabel(d)}</option>`).join("")}<option value="">全部日期</option></select>
+          <select id="s-group"><option value="">全部組別</option>
+            ${sgrps.map(g => `<option>${esc(g)}</option>`).join("")}</select>
+          <input type="search" id="s-kw" placeholder="選手姓名或單位">
+        </div>
+        <div id="slist"></div>
+        <button class="btn-more" id="s-more" style="display:none"></button>
+        <div class="note" style="margin-bottom:0">賽程取自官方賽程表,時間為預定開賽時間,
+          實際以現場公告為準;官方賽程未提供場地與球場編號。${
+            tbd ? `其中 ${tbd} 場要等預賽結束才定得出對戰組合。` : ""}</div>
+      </div></details>`;
+  }
+
   const entries = T.entries || [];
   DRAWS = new Map((T.draws || []).map(d => [d.group, d]));
   if (entries.length || DRAWS.size) {
@@ -281,14 +364,19 @@ function render() {
         }。</div></div></details>`;
   }
 
+  // 組別動輒 50 幾個(豐原主委盃 52 組),攤開就是滿滿一片標籤,把底下的比分推到看不見
+  // → 收納方式與參賽名單一致:整段 details、預設收起,summary 上先講組數。
   const groups = T.groups || [];
   if (groups.length) {
-    html += `<h2 class="sec">🎯 競賽組別 <small>(${groups.length})</small></h2>
-      <div class="card"><div class="pad">` +
+    const linked = groups.filter(g => g.drawUrl).length;
+    html += `<details class="card entries-sec">
+      <summary><span>🎯 競賽組別</span><small>${groups.length} 組</small></summary>
+      <div class="pad">` +
       groups.map(g => g.drawUrl
         ? `<a class="chip" target="_blank" rel="noopener" href="${esc(g.drawUrl)}">${esc(g.name)} ↗</a>`
         : `<span class="chip off">${esc(g.name)}</span>`).join("") +
-      `<div class="note" style="margin-bottom:0">點組別可開官方籤表/晉級圖</div></div></div>`;
+      (linked ? `<div class="note" style="margin-bottom:0">點組別可開官方籤表/晉級圖(由主辦提供,尚未產生籤表的組別會開不起來)</div>` : "") +
+      `</div></details>`;
   }
 
   if ((T.matches || []).length) {
@@ -307,6 +395,14 @@ function render() {
   }
 
   document.getElementById("out").innerHTML = html;
+  if (SCHED.length) {
+    const reset = fn => ev => { fn(ev); schedShown = PAGE; renderSchedule(); };
+    document.getElementById("s-day").onchange = reset(ev => { schedDay = ev.target.value; });
+    document.getElementById("s-group").onchange = reset(() => {});
+    document.getElementById("s-kw").oninput = reset(() => {});
+    document.getElementById("s-more").onclick = () => { schedShown += PAGE; renderSchedule(); };
+    renderSchedule();
+  }
   if (ENTRY_GROUPS.length) {
     document.getElementById("e-kw").oninput = renderEntries;
     document.getElementById("e-grps").onclick = ev => {
