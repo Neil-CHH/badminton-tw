@@ -366,16 +366,18 @@ function render() {
 
   // 組別動輒 50 幾個(豐原主委盃 52 組),攤開就是滿滿一片標籤,把底下的比分推到看不見
   // → 收納方式與參賽名單一致:整段 details、預設收起,summary 上先講組數。
+  // 組別動輒 50 幾個(豐原主委盃 52 組),攤開就是滿滿一片標籤,把底下的比分推到看不見
+  // → 收納方式與參賽名單一致:整段 details、預設收起,summary 上先講組數。
+  // **不再外連 groups[].drawUrl**(2026-09-23 使用者決定):那是 mylivescore 的官方籤表頁,
+  // 實測一半是死的(未開打的賽事 84% 404 —— 籤表頁要等主辦產生才存在),而已結束的賽事
+  // 我們自己就有逐場比分,籤表能給的它全給了還多給比分。留著連結只是讓人點到 404。
+  // 資料裡的 drawUrl 欄位仍保留:那些頁面通的時候印著「取N名」,是推導拿不到的資訊。
   const groups = T.groups || [];
   if (groups.length) {
-    const linked = groups.filter(g => g.drawUrl).length;
     html += `<details class="card entries-sec">
       <summary><span>🎯 競賽組別</span><small>${groups.length} 組</small></summary>
       <div class="pad">` +
-      groups.map(g => g.drawUrl
-        ? `<a class="chip" target="_blank" rel="noopener" href="${esc(g.drawUrl)}">${esc(g.name)} ↗</a>`
-        : `<span class="chip off">${esc(g.name)}</span>`).join("") +
-      (linked ? `<div class="note" style="margin-bottom:0">點組別可開官方籤表/晉級圖(由主辦提供,尚未產生籤表的組別會開不起來)</div>` : "") +
+      groups.map(g => `<span class="chip off">${esc(g.name)}</span>`).join("") +
       `</div></details>`;
   }
 
