@@ -522,6 +522,112 @@ def is_dropped(group, name, drop):
     return False
 
 
+# ---- LAPGO 2024 舊版面(無欄名表頭,但有格線) ----
+# 2024 年的選手名單長這樣,和 2025 起的版面差在**完全沒有欄名那一列**:
+#
+#     國小中年級男單【共74組】          ← 組別標題(表格外的頁首)
+#     ┌──────┬────────────┬────────┬───────┬──────────────┬────────┐
+#     │ 1-1  │ 竹市舊社國小 │ 戴廷緯 │ 1-41  │ 新竹市龍山國小 │ 趙子亮 │
+#
+# `parse_lapgo` 靠欄名判角色、沒有表頭就整份跳過 —— lapgo-27 捷豹盃 3 份名單、
+# 685 人次因此一直讀不到,那場是「零選手可查」清單上的常客。
+#
+# 這個版面**不能用座標切欄**:長隊名(「快羽黑武士羽球隊」x0=102)的 word 會一路
+# 延伸進姓名欄的 x 範圍(248),以 x 分群會把單位和姓名黏成一群(實測名單(2) 那群
+# 跨度 152pt)。但它**有格線**(報名結果 PDF 沒有,那才要走座標),所以改用
+# `find_tables()`:實測 3 份共 16 頁,每頁都是乾乾淨淨的 1 張表 × 6 欄。
+_LAPGO24_BLOCK = 3            # 一個欄塊 = 編號 | 隊名 | 姓名
+
+
+def _lapgo24_title(page, table):
+    """頁首的組別標題(在表格上方),回 (組別, 宣告組數);續頁沒有標題則回 None。"""
+    top = table.bbox[1] if table else 1e9
+    texts = [w[4] for w in sorted(page.get_text("words"), key=lambda w: (w[1], w[0]))
+             if w[3] <= top]
+    m = _LAPGO_TITLE.match("".join(texts))
+    return (m.group(1).strip(), int(m.group(2))) if m and m.group(1).strip() else None
+
+
+def is_lapgo_2024(doc):
+    """無表頭、有格線、頁首帶「【共N組】」、格子裡是 {組序}-{席次} 的 2024 版面。"""
+    for page in doc:
+        tables = page.find_tables().tables
+        if not tables:
+            continue
+        rows = tables[0].extract()
+        if not rows or len(rows[0]) % _LAPGO24_BLOCK:
+            continue
+        if not _lapgo24_title(page, tables[0]):
+            continue
+        if any(_LAPGO_SEAT.match((c or "").strip()) for r in rows[:6] for c in r):
+            return True
+    return False
+
+
+def parse_lapgo_2024(doc):
+    """LAPGO 2024 選手名單 → (declared, people, got)。people=[(組別,單位,姓名,原字串)]。
+
+    三件事:
+    (a) **續頁不重印標題**(名單(3) 第 2 頁第一列就是資料),組別沿用前一頁;
+        編號的組序可以交叉驗證 —— 對不上就不沿用,寧可漏收也不要把人算進別組。
+    (b) **雙打/團體只有首列有編號**,其後幾列編號留白、隊名每列重印、姓名逐列不同。
+        空編號沿用同欄塊上一個編號,一個編號 = 一隊(= 標題「共N組」的那個「組」)。
+    (c) **一頁可以有好幾個組別**,第二個之後的標題在**表格內部**、獨佔一列
+        (`['40-49歲女雙【共6組】', None, None, ...]`)。只認頁首標題會把後面幾組
+        全算進第一組(實測「40-49歲男雙」抽到 26 vs 宣告 7)。同成績總表
+        「一個名次表頭底下接連好幾個組別」那個坑。
+    (d) 守門的分母是「隊數」不是「人數」,所以 got 算不重複的編號數。
+    """
+    declared, people, got = {}, [], defaultdict(set)
+    group = gseq = None
+    for page in doc:
+        tables = page.find_tables().tables
+        if not tables:
+            continue
+        rows = tables[0].extract()
+        if not rows or len(rows[0]) % _LAPGO24_BLOCK:
+            continue
+        title = _lapgo24_title(page, tables[0])
+        if title:
+            group, cnt = title
+            gseq = None                       # 新組別,等第一個編號來定組序
+            declared[group] = declared.get(group, 0) + cnt
+        elif group is None:
+            continue                          # 還沒見過任何標題,無從歸組
+        last = {}
+        for row in rows:
+            cells = [(c or "").strip() for c in row]
+            # 表格內的組別標題:獨佔一列(第一格是標題,其餘都空)
+            if cells[0] and not any(cells[1:]):
+                m = _LAPGO_TITLE.match(cells[0])
+                if m and m.group(1).strip():
+                    group = m.group(1).strip()
+                    declared[group] = declared.get(group, 0) + int(m.group(2))
+                    gseq, last = None, {}
+                    continue
+            for bi in range(len(cells) // _LAPGO24_BLOCK):
+                seat, unit, name = cells[bi * _LAPGO24_BLOCK:(bi + 1) * _LAPGO24_BLOCK]
+                m = _LAPGO_SEAT.match(seat)
+                if m:
+                    if gseq is None:
+                        gseq = m.group(1)
+                    elif not title and m.group(1) != gseq:
+                        # 續頁的組序和上一頁對不上 → 這頁不是同一組,別亂歸
+                        group = None
+                        break
+                    last[bi] = seat
+                seat = last.get(bi)
+                if not seat or not group:
+                    continue
+                got[group].add(seat)
+                # 單字的姓名格一定是碎片不是人(見 parse_lapgo);角色欄(領隊/教練)也不是選手
+                if len(name) > 1 and _lapgo_role(name) != "name" and not _lapgo_role(unit) == "name":
+                    people.append((group, unit, name, name))
+            if group is None:
+                break
+    return declared, people, {g: len(v) for g, v in got.items()}
+
+
 def read_doc(doc):
     """一份 PDF → (declared, people, got),自動判別版面。讀不出來回 None。
 
@@ -536,6 +642,8 @@ def read_doc(doc):
         return declared, rows_to_people(rows), dict(got)
     if is_lapgo(doc):
         return parse_lapgo(doc)
+    if is_lapgo_2024(doc):
+        return parse_lapgo_2024(doc)
     return None
 
 
