@@ -111,7 +111,9 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
   `--only lapgo` 時同樣要跑)、`dedupe`,最後只重建一次索引;
   任一來源失敗不中斷其他來源(`--only`、`--full`、`--stage-results`)
 - `scripts/sources_common.py` — 跨來源共用:`source_of` / `merge_standings` /
-  `write_if_changed` / `city_from_text` / `NON_BADMINTON` 排除規則 / 帶 cookie 的 `Http`
+  `write_if_changed` / `city_from_text` / `NON_BADMINTON` 排除規則 / 帶 cookie 的 `Http` /
+  **`normalize_cjk`**(見「注意」段的異體字那條)
+- `scripts/fix_cjk_variants.py` — 一次性修既有賽事檔裡的康熙部首/CJK 筆畫(`--apply` 才寫)
 - `scripts/scrape.py` — mylivescore:API 抓取+組別標籤+名次推導(`--full`、`--no-index`)
 - `scripts/scrape_lapgo.py` — lapgo:比分正規化 + 官方成績總表 → standings
   + **賽事公告(最新消息)→ documents**(2026-09 加,選手名單就在那裡)
@@ -128,7 +130,22 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
   自動解析成績總表(mylivescore 的 PDF 是可抽文字的向量表格,不必視覺判讀);
   成績總表不在 mylivescore、只能人工取得的少數賽事登錄在 `LOCAL_SUMMARY` → 讀 `Ref/`
   的本地檔(pdf 或 xlsx 版面完全一樣,共用同一支 `scan_table`)
-- `scripts/parse_entry_pdf.py` — **官方名單 PDF → entries(source=signup)**,吃三種版面:
+- `scripts/parse_entry_pdf.py` — **官方名單 PDF → entries(source=signup)**,吃四種版面。
+  第四種是 **LAPGO 的「抽籤結果」籤表 PDF**(2026-09-23 加,`parse_lapgo_draw`)——
+  主辦偶爾只貼籤表不貼名單(lapgo-32 花蓮市長盃 24 頁 23 組,整場零選手可查)。
+  空間排版、**無格線**:標題「N.組別：M 隊」自帶宣告數,席位號列**整列都是純數字**
+  (標題也有數字但混著中文),席位下方那幾列是單位與姓名,每個 token 歸到
+  **x 最近的席位號**(不設絕對距離 —— 長單位名的起點會偏左 40pt 以上)。四個坑:
+  (a) **一個席位列的資料會被 ROW_TOL 切成好幾列**(同排籤位垂直差最多 3.3pt,
+  剛好超過容差),只取第一列會漏席位;(b) **隊數是奇數時最後一席單獨佔一列**,
+  要求「一列至少兩個席位」會讓 3/5/9/11 隊的組各少一隊;(c) 團體組只有隊名沒有隊員,
+  整組跳過,**宣告數也要從分母排除**否則覆蓋率憑空少一截;(d) **雙打的兩個姓名黏成
+  一個 token**(「鄭柏中張耀文」),姓名 2~3 字不固定、切點無從推定(「張瑋賴業誠」是 2+3)
+  → **拿全庫已知選手名當字典**,只採唯一解(實測 24 組樣本 22 唯一解、**0 個多解**、
+  2 個無解),切不開就整隊跳過 —— 造出查得到的假選手比漏收嚴重得多。
+  **籤表的比分不碰**:勝負要靠座標把勝方節點接回兩個來源席位,錯一個就是假戰績
+  (同 `scrape_sportgov` 對資格賽籤表的既有判斷)。實測 21 組 219 隊全部「抽到 = 宣告」。
+  另外三種:
   **LAPGO 2024 舊版面(2026-09-23 加,`parse_lapgo_2024`)** 與下面兩種最大的差別是
   **完全沒有欄名表頭那一列**(第一列就是資料),靠欄名判角色的邏輯整份跳過 ——
   lapgo-27 捷豹盃 3 份名單、869 人次因此一直讀不到,那場是「零選手可查」的常客。
@@ -431,6 +448,16 @@ python -m http.server 8765 -d docs   # 本地預覽
 
 ## 注意
 
+- **「看起來是中文、其實不是中文」的字(2026-09-23)**:主辦打字時輸入法會選到
+  康熙部首(`⾧⾺⽟⽻⼩`,U+2E80–U+2FDF)或 CJK 筆畫(`㇐㇠`,U+31C0–U+31EF),
+  使用者用正常字就**搜不到那個人** —— 實測全庫累積 331 處、14 場,其中 29 處落在
+  選手姓名(「魏建㇐」「黃正㇐」「林⾧謙」「⾺慶璇」,最後一個還在 matches 的 scoreinfo 裡)。
+  `sources_common.normalize_cjk` 還原:康熙部首有相容分解、NFKC 轉得回去,**CJK 筆畫沒有**
+  (NFKC 原樣不動),只能查表(目前 ㇐→一、㇠→乙)。**刻意逐字元替換而不是整串 NFKC** ——
+  整串會把全形英數也轉半形,而隊名本來就很自由(「JH金鴻」「丹尼爾羽球A」),不該一起動。
+  治本點在 **`write_if_changed`**(所有來源寫賽事檔的共同出口,擋在這裡才不會每支爬蟲
+  各漏一處),正規化放在內容比較**之前**,所以不會每月因為「檔裡是正字、抓回來是異體字」
+  而反覆重寫。既有資料用 `fix_cjk_variants.py --apply` 修過一次。
 - Windows console 編碼:python 一律 `-X utf8`,stdout 需 reconfigure(腳本已內建)。
 - **跨語言契約有三個,改一邊就要改另一邊**:`rebuild_index.shard_of` ↔ `common.js shardOf`、
   mylivescore 的 14 個 match key、`sources_common.effective_dates` ↔ `common.js effectiveDates`
