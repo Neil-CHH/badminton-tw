@@ -232,8 +232,52 @@ def same_content(a, b):
             == {k: v for k, v in b.items() if k != "lastUpdated"})
 
 
+# 「看起來是中文、其實不是中文」的兩個 Unicode 區塊。主辦打字時輸入法選到這些字,
+# 使用者用正常字就搜不到那個人(實測全庫 331 處,其中 29 處落在選手姓名:
+# 「魏建㇐」「黃正㇐」「林⾧謙」「⾺慶璇」)。
+#   - U+2E80–U+2FDF 康熙部首/CJK 部首補充(⾧⾺⽟⽻⼩…):有相容分解,NFKC 轉得回去
+#   - U+31C0–U+31EF CJK 筆畫(㇐㇠):**沒有**相容分解,NFKC 原樣不動,只能查表
+# 刻意**逐字元**替換而不是整串 NFKC:整串會把全形英數也轉半形,而隊名本來就很自由
+# (「JH金鴻」「丹尼爾羽球A」),不該一起動。
+_CJK_STROKE = {"㇐": "一", "㇠": "乙"}   # ㇐→一、㇠→乙
+
+
+def normalize_cjk(text):
+    """把康熙部首與 CJK 筆畫還原成一般漢字;其餘字元一律不動。"""
+    if not isinstance(text, str):
+        return text
+    out = []
+    for ch in text:
+        o = ord(ch)
+        if ch in _CJK_STROKE:
+            out.append(_CJK_STROKE[ch])
+        elif 0x2E80 <= o <= 0x2FDF:
+            nf = unicodedata.normalize("NFKC", ch)
+            out.append(nf if len(nf) == 1 else ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _normalize_deep(obj):
+    if isinstance(obj, str):
+        return normalize_cjk(obj)
+    if isinstance(obj, dict):
+        return {k: _normalize_deep(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_normalize_deep(v) for v in obj]
+    return obj
+
+
 def write_if_changed(path, record, existing):
-    """內容有變才寫檔。回傳 True 表示真的寫了。"""
+    """內容有變才寫檔。回傳 True 表示真的寫了。
+
+    寫檔前一律過 `normalize_cjk`:這是所有來源寫賽事檔的共同出口,擋在這裡
+    才不會每支爬蟲各漏一處(實測全庫累積了 331 處,29 處是選手姓名,那些人
+    用正常字搜不到)。正規化放在比較**之前**,既有檔早已修過,所以不會每月
+    因為「檔裡是正字、抓回來是異體字」而反覆重寫。
+    """
+    record = _normalize_deep(record)
     if same_content(record, existing):
         return False
     path.write_text(json.dumps(record, ensure_ascii=False, separators=(",", ":")),

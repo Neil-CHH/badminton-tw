@@ -49,7 +49,7 @@ from sources_common import SRC_LAPGO, source_of, write_if_changed     # noqa: E4
 
 CACHE = ROOT / "inbox" / "entrypdf"          # inbox 已 gitignore
 # mylivescore 叫「報名結果」、LAPGO 的公告叫「選手名單」,兩邊都是同一件事:誰報了名。
-SIGNUP_KEYWORDS = ("報名結果", "選手名單")
+SIGNUP_KEYWORDS = ("報名結果", "選手名單", "抽籤結果")
 DROPOUT_KEYWORDS = ("不成組",)
 
 # 同一列的 y 容差。不能用「四捨五入到固定格線」分列:704036 的組別標頭「35歲組男單」
@@ -628,6 +628,116 @@ def parse_lapgo_2024(doc):
     return declared, people, {g: len(v) for g, v in got.items()}
 
 
+# ---- LAPGO 抽籤結果籤表 PDF(空間排版,無格線) ----
+# 主辦偶爾不貼名單、只貼籤表(lapgo-32 花蓮市長盃 24 頁 23 組 229 隊,整場零選手可查)。
+# 版面是一張張籤表樹:
+#
+#     3.公開組男單：8 隊，共 15 場        ← 標題,自帶宣告隊數
+#       1        3        5        7      ← 席位號列(整列都是純數字)
+#     黃柏軒  國立東華大學 甘佑信 成淵高中 李明哲  徐代瑋   ← 單位與姓名,靠 x 對回席位
+#
+# 只收 entries,**不碰比分與名次**:籤表的勝負要靠版面座標把勝方節點接回兩個來源
+# 席位,錯一個就是假戰績 —— 同 scrape_sportgov 對資格賽籤表的既有判斷。
+_DRAW_TITLE = re.compile(r"^\d+[.、]\s*(.+?)[:：]\s*(\d+)\s*隊")
+_DRAW_SKIP = ("團體",)      # 團體籤表只有隊名、沒有隊員,收了也查不到人
+
+
+def known_players(_cache={}):
+    """全庫已知選手名,拿來校驗雙打黏在一起的姓名要切在哪(見 _split_pair)。"""
+    if not _cache:
+        path = ROOT / "docs" / "data" / "search-index-players.json"
+        _cache["n"] = set(json.loads(path.read_text(encoding="utf-8")))
+    return _cache["n"]
+
+
+def _split_pair(name, known):
+    """雙打的兩個姓名黏成一個 token(「鄭柏中張耀文」)→ 拆回兩人。
+
+    姓名 2~3 字不固定,切點無從推定(「張瑋賴業誠」是 2+3)。**拿全庫已知選手名當字典**,
+    只採唯一解:實測 24 組樣本 22 個唯一解、**0 個多解**、2 個無解(其中一人沒進過庫)。
+    切不開就回 None 讓整隊跳過 —— 造出查得到的假選手比漏收嚴重得多。
+    """
+    cand = [(name[:i], name[i:]) for i in range(2, len(name) - 1)
+            if name[:i] in known and name[i:] in known]
+    return list(cand[0]) if len(cand) == 1 else None
+
+
+def is_lapgo_draw(doc):
+    for page in doc:
+        if page.find_tables().tables:
+            return False                  # 有格線的是名單表,不是籤表
+        words = sorted(page.get_text("words"), key=lambda w: (w[1], w[0]))
+        if _DRAW_TITLE.match("".join(w[4] for w in words[:6])):
+            return True
+    return False
+
+
+def parse_lapgo_draw(doc, known):
+    """籤表 PDF → (declared, people, got)。people=[(組別,單位,姓名,原字串)]。
+
+    (a) **席位號列的判準是「整列都是純數字」** —— 標題列也有數字(「8 隊，共 15 場」),
+        但它混著中文。席位下方最近的一列就是單位與姓名。
+    (b) **每個 token 歸到 x 最近的席位號**(不設絕對距離):單位名較長時起點會偏左
+        40pt 以上,用固定閾值會把長單位名丟掉。一席兩個 token = 左單位右姓名,
+        一個 token = 只有姓名(沒填單位,同 LAPGO 籤位的既有慣例)。
+    (c) **續頁不重印標題**(29 隊的組別佔兩頁),組別沿用前頁;宣告數只在有標題的頁累加,
+        席位數跨頁累加,否則守門的分母會少一半。
+    """
+    declared, people, got = {}, [], defaultdict(int)
+    group = None
+    for page in doc:
+        words = sorted(page.get_text("words"), key=lambda w: (round(w[1], 1), w[0]))
+        if not words:
+            continue
+        m = _DRAW_TITLE.match("".join(w[4] for w in words[:8]))
+        if m:
+            group = m.group(1).strip()
+            # 團體組的宣告數也不能進分母:它們被整組跳過(只有隊名),
+            # 算進去會讓覆蓋率憑空少一截(lapgo-32 的 10 隊)。
+            if not any(k in group for k in _DRAW_SKIP):
+                declared[group] = declared.get(group, 0) + int(m.group(2))
+        if not group or any(k in group for k in _DRAW_SKIP):
+            continue
+        rows = []
+        for w in words:
+            if rows and abs(w[1] - rows[-1][0]) <= ROW_TOL:
+                rows[-1][1].append(w)
+            else:
+                rows.append((w[1], [w]))
+        pair = "雙" in group
+        for i, (y, row) in enumerate(rows):
+            # 整列都是純數字才是席位號列(標題與賽制說明也帶數字,但混著中文)。
+            # **一列只有一個席位也要收** —— 隊數是奇數時最後一席單獨佔一列,
+            # 要求 >=2 會讓 3/5/9/11 隊的組各少一隊(實測 6 組中招)。
+            if not row or not all(w[4].isdigit() for w in row):
+                continue
+            seats = [(w[0], w[4]) for w in row]
+            # **一個席位列的資料會被 ROW_TOL 切成好幾列** —— 同一排籤位的垂直位置
+            # 有高低差(實測最多 3.3pt,剛好超過容差),只取第一列會漏掉落在後面那列的
+            # 席位(lapgo-32 女雙的席位 5)。收到下一個席位列或超出 25pt 為止。
+            body = []
+            for ry, r in rows[i + 1:]:
+                if ry - y >= 25 or all(w[4].isdigit() for w in r):
+                    break
+                body.extend(r)
+            if not body:
+                continue
+            bucket = defaultdict(list)
+            for w in body:
+                sx, _sn = min(seats, key=lambda s: abs(s[0] - w[0]))
+                bucket[sx].append((w[0], w[4]))
+            for sx, cells in bucket.items():
+                cells.sort()
+                unit, name = ("", cells[0][1]) if len(cells) == 1 else                              ("".join(c[1] for c in cells[:-1]), cells[-1][1])
+                got[group] += 1
+                members = _split_pair(name, known) if pair else [name]
+                if not members or any(len(x) < 2 for x in members):
+                    continue              # 拆不開的整隊不收(見 _split_pair)
+                for mem in members:
+                    people.append((group, unit, mem, name))
+    return declared, people, dict(got)
+
+
 def read_doc(doc):
     """一份 PDF → (declared, people, got),自動判別版面。讀不出來回 None。
 
@@ -644,6 +754,8 @@ def read_doc(doc):
         return parse_lapgo(doc)
     if is_lapgo_2024(doc):
         return parse_lapgo_2024(doc)
+    if is_lapgo_draw(doc):
+        return parse_lapgo_draw(doc, known_players())
     return None
 
 
