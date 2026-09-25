@@ -161,12 +161,17 @@ function matchSideHTML(m, side, isWinner) {
     <div class="unit">${unit ? unitLink(unit) : ""}</div></div>`;
 }
 
+/* 已排點但還沒打的場次:選手姓名有了,分數是空的 → 不能印成 ":" */
+function hasScore(si) { return (si.scoreA ?? "") !== "" || (si.scoreB ?? "") !== ""; }
+
 function matchRow(m) {
   const isTeam = m.HeadGroup === "團體";
-  const games = (m.scoreinfo || []).map(si =>
+  const games = (m.scoreinfo || []).filter(hasScore).map(si =>
     `<b>${esc(si.scoreA)}:${esc(si.scoreB)}</b>`).join("、");
-  const total = isTeam ? `${esc(m.Asidescore)} : ${esc(m.Bsidescore)}` :
-    (m.scoreinfo?.length ? `${esc(m.Asidescore)}:${esc(m.Bsidescore)}` : "—");
+  const played = (m.Asidescore ?? "") !== "" || (m.Bsidescore ?? "") !== "";
+  const total = !played ? "—" :
+    isTeam ? `${esc(m.Asidescore)} : ${esc(m.Bsidescore)}` :
+      `${esc(m.Asidescore)}:${esc(m.Bsidescore)}`;
   return `<div class="mrow">
     <div class="head">
       <span>${esc(baseGroup(m.groupName))}・${esc(m.matchtype || "")}</span>

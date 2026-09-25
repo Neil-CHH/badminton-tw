@@ -5,6 +5,7 @@
     python scripts/scrape.py             # 增量:只抓新賽事 / 狀態變更 / 進行中賽事
     python scripts/scrape.py --full      # 全量:所有賽事重抓(含逐場比分)
     python scripts/scrape.py --no-index  # 不重建索引(由 update_all.py 最後統一重建)
+    python scripts/scrape.py --only 267404,264311   # 只重抓指定賽事(修資料用)
 
 資料寫入 docs/data/tournaments/{openid}.json,結尾自動呼叫 rebuild_index.py。
 抓回來的內容與現有檔案相同(除 lastUpdated)時不寫檔,故「更新 N」代表真的有變動。
@@ -119,6 +120,114 @@ class Api:
         payload = {"api": api, "Matchno": openid}
         payload.update(extra)
         return post_json(self.live_base + "/proxy.php", payload, self.live_origin)
+
+
+# ---------- 逐場比分正規化 ----------
+
+# 「正規化契約」的 14 個 key(見 CLAUDE.md):rebuild_index.py 與 docs/tournament.html
+# 都直接讀這個形狀,少一個 key 不會報錯,只會靜默產生空的選手統計。
+MATCH_KEYS = ("groupName", "match", "date", "time", "teamA", "teamB", "matchtype",
+              "stadium", "winner", "Asidescore", "Bsidescore", "abstain",
+              "HeadGroup", "scoreinfo")
+
+
+def _clean_member(v):
+    """選手格。未排點的空位官方填 "0" / "0﹐(5)" 這種數字殘值,改版前的資料是空字串;
+    收進去會變成查得到的假選手,所以沒有任何文字的一律視為空。"""
+    v = (v or "").strip()
+    return v if any(ch.isalpha() for ch in v) else ""
+
+
+def _num(v):
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return -1
+
+
+def _game_sets(game):
+    """一個 ScoreList 項目底下的逐局(未打的局官方也會佔位,分數全 0)。"""
+    out = []
+    for si in game.get("scoreinfo") or []:
+        out.append({
+            "round": "",
+            "memberA": _clean_member(si.get("memberA")),
+            "memberB": _clean_member(si.get("memberB")),
+            "scoreA": (si.get("scoreA") or "").strip(),
+            "scoreB": (si.get("scoreB") or "").strip(),
+        })
+    return out
+
+
+def _played(r):
+    """打過的局:0:0 是佔位(棄權的「棄」不是 0,算打過)。"""
+    return r["scoreA"] not in ("", "0") or r["scoreB"] not in ("", "0")
+
+
+def normalize_match(m):
+    """把 API 回來的一場比賽整成契約形狀(14 個 key,逐局明細在 `scoreinfo[]`)。
+
+    2026-09 API 改版:逐局明細從頂層 `scoreinfo[]` 改成巢狀的
+    `ScoreList: [{game, scoreinfo:[...]}]`,而**選手姓名只存在於這一層**。
+    原樣存檔的話 rebuild_index 與 tournament.html 都讀不到 scoreinfo ——
+    失敗方式是靜默的:整場只剩單位名、一位選手都查不到(11 場、7,823 場次中招,
+    267404 豐原主委盃 1,240 場全中)。
+
+    巢狀的兩層語意不同,攤平方式也就不同:
+    - **個人賽**:ScoreList 只有一項,底下才是逐局 → 逐局各一列
+      (比改版前多了各局比分:改版前那一列放的是整場總分)。
+    - **團體賽**:ScoreList 一項 = 一點,底下是該點的逐局 → **一點一列**。
+      不能逐局展開 —— `rebuild_index` 是以 scoreinfo 的列數計團體賽的點勝負,
+      展開會把一點算成三點,選手勝負直接翻三倍。一點打滿兩局以上時該列改記
+      「局數」(2:1),才維持「這一列的高分方 = 這一點的勝方」。
+    """
+    m = dict(m)
+    sl = m.pop("ScoreList", None)
+    if sl is not None and not m.get("scoreinfo"):
+        is_team = m.get("HeadGroup") == "團體"
+        rows = []
+        for i, game in enumerate(sl or [], 1):
+            sets_ = _game_sets(game)
+            if not sets_:
+                continue
+            played = [r for r in sets_ if _played(r)]
+            if is_team:
+                row = dict(played[0] if played else sets_[0])
+                if len(played) > 1:
+                    row["scoreA"] = str(sum(1 for r in played
+                                            if _num(r["scoreA"]) > _num(r["scoreB"])))
+                    row["scoreB"] = str(sum(1 for r in played
+                                            if _num(r["scoreB"]) > _num(r["scoreA"])))
+                row["round"] = str(game.get("game") or i)
+                rows.append(row)
+            else:
+                for j, r in enumerate(played or sets_[:1], 1):
+                    r = dict(r)
+                    r["round"] = str(j)
+                    rows.append(r)
+        m["scoreinfo"] = rows
+    m.setdefault("scoreinfo", [])
+    # 契約的 14 個 key 固定順序在前;之後若 API 又多出欄位,原樣留著並由
+    # normalize_schedule 出聲,免得下一次改版又是靜默的。
+    out = {k: m.get(k, "") for k in MATCH_KEYS}
+    for k, v in m.items():
+        if k not in out:
+            out[k] = v
+    return out
+
+
+def normalize_schedule(schedule, openid=""):
+    out = [normalize_match(m) for m in schedule]
+    extra = sorted({k for m in out for k in m} - set(MATCH_KEYS))
+    if extra:
+        print(f"  [警告] {openid} matches 出現契約外的欄位 {extra} —— "
+              f"API 可能又改版了,確認 rebuild_index/tournament.html 是否讀得到")
+    named = sum(1 for m in out for si in m["scoreinfo"]
+                if (si.get("memberA") or "").strip() or (si.get("memberB") or "").strip())
+    if out and not named:
+        print(f"  [警告] {openid} 抓到 {len(out)} 場比分但**一個選手姓名都沒有** —— "
+              f"這場的選手與單位統計會是空的")
+    return out, named
 
 
 # ---------- 組別標籤解析 ----------
@@ -301,6 +410,35 @@ def load_existing(openid):
     return None
 
 
+def keep_known_names(schedule, existing_matches):
+    """新抓的某場沒有選手姓名、舊資料有 → 沿用舊的那一列。
+
+    API 偶爾對**已經打完**的場次回空的 ScoreList(實測 785111 有 21 場、250114 整場
+    159 場全空),照抄就是把查得到的選手洗成查不到,而且不會有任何錯誤訊息。
+    只在「新的沒有、舊的有」時沿用,新的有姓名就一律以新的為準。
+    """
+    old = {(m.get("groupName"), m.get("match")): m for m in existing_matches or []}
+    kept = 0
+    for m in schedule:
+        if _named_rows([m]):
+            continue
+        o = old.get((m.get("groupName"), m.get("match")))
+        if o is None:
+            continue
+        # 既有資料可能還是改版後、尚未修過的巢狀形狀 → 一樣先攤平再看有沒有姓名
+        o = normalize_match(o)
+        if _named_rows([o]):
+            m["scoreinfo"] = o["scoreinfo"]
+            kept += 1
+    return schedule, kept
+
+
+def _named_rows(matches):
+    """比分裡有多少列帶得到選手姓名(用來擋「新資料反而變空」的覆蓋)。"""
+    return sum(1 for m in matches or [] for si in (m.get("scoreinfo") or [])
+               if (si.get("memberA") or "").strip() or (si.get("memberB") or "").strip())
+
+
 def scrape_tournament(api, info, status_key, existing):
     openid = info["OpenID"]
     record = {
@@ -350,6 +488,15 @@ def scrape_tournament(api, info, status_key, existing):
         d = api.live("matches", openid)
         time.sleep(0.5)
         schedule = (d.get("result", {}) or {}).get("schedule", []) or []
+        schedule, named = normalize_schedule(schedule, openid)
+        schedule, kept = keep_known_names(schedule, (existing or {}).get("matches"))
+        if kept:
+            print(f"  [保留] {openid} {kept} 場 API 這次沒回選手姓名,沿用既有的那幾列")
+        # 整場都沒姓名而舊資料有 → API 那頭的問題(實測 250114 現在回的 ScoreList
+        # 全是空陣列),覆蓋下去等於把查得到的選手洗成查不到。寧可留舊的並出聲。
+        if schedule and not _named_rows(schedule) and _named_rows((existing or {}).get("matches")):
+            print(f"  [保留] {openid} API 回來的比分沒有任何選手姓名,整場保留既有資料不覆蓋")
+            schedule = []
 
     # 部分賽事(如全國排名賽、全中運會內賽)API 不提供逐場比分 → schedule 為空。
     # 此時保留既有(多為 PDF 匯入的)groups / matches / standings,不覆蓋。
@@ -377,8 +524,19 @@ def scrape_tournament(api, info, status_key, existing):
     return record
 
 
+def only_openids():
+    """--only 123456,789 → 只抓這幾場(修資料時用,不必整庫重抓)。"""
+    for i, a in enumerate(sys.argv):
+        if a == "--only" and i + 1 < len(sys.argv):
+            return {x.strip() for x in sys.argv[i + 1].split(",") if x.strip()}
+        if a.startswith("--only="):
+            return {x.strip() for x in a.split("=", 1)[1].split(",") if x.strip()}
+    return None
+
+
 def main():
     full = "--full" in sys.argv
+    only = only_openids()
     TOURN_DIR.mkdir(parents=True, exist_ok=True)
     api = Api()
     print(f"liveresult host: {api.live_base}")
@@ -401,9 +559,12 @@ def main():
             # 已判定與其他來源重複並刪檔的賽事,不再抓也不再建檔(見 dedupe.py)
             if openid in blocked:
                 continue
+            if only is not None and openid not in only:
+                continue
             existing = load_existing(openid)
             need = (
                 full
+                or only is not None
                 or existing is None
                 or existing.get("status") != STATUS_NAME[status_key]
                 or status_key == "2"  # 進行中的每次都更新比分

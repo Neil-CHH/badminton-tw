@@ -92,6 +92,11 @@ mylivescore / LAPGO 公告的選手名單 PDF)。LAPGO 的抽籤結果另存 `dr
 time / teamA / teamB / matchtype / stadium / winner / Asidescore / Bsidescore / abstain /
 HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選手/單位統計**——
 改動抓取程式後,務必抽一位該賽事的選手確認勝負統計不是空的。
+**連來源自己改版都會踩到**:2026-09 mylivescore 把逐局明細從頂層 `scoreinfo[]` 換成巢狀的
+`ScoreList: [{game, scoreinfo[]}]`,而**選手姓名只存在於那一層**;原樣存檔的結果是
+11 場、7,823 場次只剩兩個學校名、一位選手都查不到(267404 豐原主委盃 1,240 場全中),
+而且沒有任何錯誤訊息。正規化在 `scrape.normalize_match`,守門在
+`verify_data.check_match_shape`(欄位不合契約、或「有比分卻零個姓名」→ **錯誤級**)。
 
 ## 架構
 
@@ -195,6 +200,8 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
 - `scripts/verify_data.py` — 資料健檢(連結一致性/索引新鮮度/分片落點/亂碼/缺口),只讀不寫。
   **`check_pdf_standings` 專查我們自己解析 PDF 的結果**(同組別出現兩個第一名 = 多半把兩個
   分組讀成同一組),因為 `check_standings` 對 pdf/official 是整組跳過的。
+  **`check_match_shape` 專查逐場比分的形狀**(2026-09-25 加):欄位不合 14 key 契約、
+  或「有比分卻一個選手姓名都沒有」→ 錯誤級。來源改版時這是唯一會出聲的地方。
   **`check_entry_gaps` 專查「名冊掛在 documents 裡卻沒解析」**(2026-09 加)——
   以前這種漏法是靜默的:官方掛上名單 PDF、沒人去讀,那場就一直零位選手可查。
   它同時是「還沒支援的名單版面」的清單。
@@ -211,7 +218,21 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
   1-22(對照表在 scrape.py)。回應含未跳脫換行,需 `replace(\n→\\n)` 後再 JSON parse。
 - 選手賽事 API host 是 IP(`http://172.105.210.232/liveresult/`),由
   `https://livescore.efsoft.net/golivequery.php?openid=X` redirect 動態解析。
-  `api:items` 組別、`api:matches` 逐場比分。**IsSystem 旗標不可靠**:許多 IsSystem=0
+  `api:items` 組別、`api:matches` 逐場比分。
+- ⚠️ **`api:matches` 的逐局明細是巢狀的 `ScoreList`(2026-09 改版)**,不是舊的頂層
+  `scoreinfo[]`,**選手姓名只在這一層**。兩層語意不同,攤平方式也不同
+  (`scrape.normalize_match`):個人賽的 ScoreList 只有一項、底下才是逐局 → **逐局各一列**
+  (比改版前多了各局比分,改版前那一列放的是整場總分);團體賽**一項 = 一點**、
+  底下是該點的逐局 → **一點一列**,不可逐局展開(`rebuild_index` 以 scoreinfo 的列數計
+  團體賽的點勝負,展開會讓選手勝負翻三倍),一點打滿兩局以上時該列改記局數(2:1)。
+  順帶兩件事:未排點的空位官方填 `"0"` / `"0﹐(5)"`,收進去就是查得到的假選手
+  (`_clean_member` 丟掉沒有任何文字的格);雙打的姓名分隔符從 `-` 改成 `/`,
+  `split_members` / `splitMembers` 兩種都吃,舊資料不必回頭改。
+- ⚠️ **API 會對已經打完的場次回空的 `ScoreList`**:實測 785111 有 21 場、250114 整場
+  159 場全空,全庫 233 場裡有 33 場的姓名量比庫裡少一成以上。照抄就是把查得到的選手
+  洗成查不到 → `keep_known_names()` 在「新的沒姓名、舊的有」時沿用舊的那一列,
+  整場都沒姓名時整場不覆蓋。所以**不要為了統一形狀去跑 `--full`**:
+  逐場沿用救得回大部分,但那是把賭注押在 API 當下的心情上。**IsSystem 旗標不可靠**:許多 IsSystem=0
   的地方賽/休閒賽 API 仍回傳完整逐場比分,故 scrape.py 對已結束/進行中賽事一律試抓
   (2026-06 起);少數賽事(全中運會內賽、全運資格賽、部分選拔賽)才真的回空,需 PDF 補。
 - 籤表:`http://livescore.mylivescore.tw/draws/{openid}/{groupid}.html`(直接外連)。
@@ -419,6 +440,7 @@ python scripts/update_all.py             # 每月增量更新(三來源 + fetch_
 python scripts/update_all.py --full      # 全量重抓(對 mylivescore/lapgo 生效)
 python scripts/update_all.py --only lapgo        # 只跑單一來源
 python scripts/scrape.py          # 只跑 mylivescore(--full / --no-index)
+python scripts/scrape.py --only 267404,264311 --no-index   # 只重抓指定賽事(修資料用)
 python scripts/scrape_lapgo.py    # 只跑 lapgo(--full / --only {cid} / --dry-run)
 python scripts/scrape_tsba.py     # 只跑 tsba(--dry-run / --no-detail)
 python scripts/scrape_tsba.py --build-entries   # 由賽程表 xlsx 建參賽名單(缺才抓)
@@ -493,6 +515,12 @@ python -m http.server 8765 -d docs   # 本地預覽
   前三段一律 `details.entries-sec` **預設收起**(賽程 1409 場、名單上千人次、組別 52 個,
   任一段攤開都會把逐場比分推到看不見)。賽程排在名單之前:抽籤後開打前,「幾點打、跟誰打」
   比「有誰報名」即時。純顯示層,不影響搜尋。
+- **已排點但還沒打的場次**(抽籤後、開打前):mylivescore 的 `matches[]` 本來就會先給
+  對戰雙方與選手姓名,分數是空的。這是好事(**抽籤完就查得到人**),但
+  `tournament.html` / `player.html` 印分數前要濾掉空值,否則會印出一排 `:`。
+  比分總分也一樣:`Asidescore` 是空的就顯示 `—`,不要顯示 `:`。
+  (LAPGO 的 `schedule[]` 是另一回事 —— 那些**未打的場次不可放進 `matches[]`**,
+  因為那邊連勝負欄位都沒有,會被 rebuild_index 算進出賽統計。)
 - **`groups[].drawUrl` 不再外連(2026-09-23 使用者決定)**,但**欄位保留在資料裡**。
   那是 mylivescore 的 `livescore.mylivescore.tw/draws/{openid}/{groupid}.html`,通的時候是
   真的籤表頁(絕對定位的籤表樹,有選手、單位,**還印著「取4名」**),但抽樣 75 組:

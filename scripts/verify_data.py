@@ -18,6 +18,7 @@ from pathlib import Path
 
 import dedupe  # 共用去重判定,確保健檢與 dedupe.py 用的是同一套規則
 import rebuild_index  # 共用 shard_of,確保與前端 common.js 的分片演算法一致
+from scrape import MATCH_KEYS  # 逐場比分的「正規化契約」,兩邊只留一份定義
 import sources_common
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -320,6 +321,40 @@ _AUTO_DOC = re.compile(r"報名結果|選手名單")
 _AUTO_URL = re.compile(r"\.pdf$|^https?://drive\.google\.com/file/d/", re.I)
 
 
+def check_match_shape(tours):
+    """逐場比分必須符合「正規化契約」,而且要真的帶得到選手姓名。
+
+    這條擋的是**靜默失敗**:2026-09 mylivescore 改版,把逐局明細從頂層 `scoreinfo[]`
+    換成巢狀的 `ScoreList[{game, scoreinfo[]}]`。抓回來原樣存檔不會有任何錯誤,
+    rebuild_index 與 tournament.html 卻都讀不到 scoreinfo —— 11 場、7,823 場次
+    只剩單位名,整場一位選手都查不到(267404 豐原主委盃 1,240 場全中)。
+    正規化在 scrape.normalize_match;新來源/新版面沒對上就會在這裡現形。
+    """
+    bad_keys, nameless = [], []
+    for oid, t in sorted(tours.items()):
+        ms = t.get("matches") or []
+        if not ms:
+            continue
+        extra = sorted({k for m in ms for k in m} - set(MATCH_KEYS))
+        missing = sorted(set(MATCH_KEYS) - {k for m in ms for k in m})
+        if extra or missing:
+            bad_keys.append((oid, t, extra, missing))
+        named = sum(1 for m in ms for si in (m.get("scoreinfo") or [])
+                    if (si.get("memberA") or "").strip() or (si.get("memberB") or "").strip())
+        if not named:
+            nameless.append((oid, t, len(ms)))
+    for oid, t, extra, missing in bad_keys:
+        err(f"{oid}「{(t.get('name') or '')[:20]}」matches 不符契約:"
+            + (f"多了 {extra} " if extra else "")
+            + (f"少了 {missing}" if missing else "")
+            + " —— 選手統計會是空的,見 scrape.normalize_match")
+    for oid, t, n in nameless:
+        err(f"{oid}「{(t.get('name') or '')[:20]}」有 {n} 場比分卻**一個選手姓名都沒有** "
+            f"—— scoreinfo 沒解析到,該場選手與單位統計會是空的")
+    if not bad_keys and not nameless:
+        print("[OK] 逐場比分:形狀符合契約,每場都帶得到選手姓名")
+
+
 def check_entry_gaps(tours):
     """查不到任何參賽者的賽事,以及「名冊掛在那裡卻沒解析」的賽事。
 
@@ -442,6 +477,7 @@ def main():
     check_duplicate_awards(tours)
     check_standings(tours)
     check_pdf_standings(tours)
+    check_match_shape(tours)
     check_entry_gaps(tours)
 
     if errors:

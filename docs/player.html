@@ -48,7 +48,8 @@ function renderMatchRow(m) {
 
   const myUnit = m["team" + mySide] || "";
   const opUnit = m["team" + opSide] || "";
-  const gameScores = games.map(si => {
+  /* 已排點但還沒打的場次分數是空的,印出來會是 ":" → 濾掉 */
+  const gameScores = games.filter(si => (si.scoreA ?? "") !== "" || (si.scoreB ?? "") !== "").map(si => {
     const a = mySide === "A" ? si.scoreA : si.scoreB;
     const b = mySide === "A" ? si.scoreB : si.scoreA;
     const w = Number(a) > Number(b);
