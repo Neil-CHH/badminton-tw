@@ -272,9 +272,15 @@ function render() {
       }).join("") + `</div>`;
   }
 
+  // 名次表和名單/組別同樣長(325014 豐原主委盃 61 組 238 筆),攤開一樣會把底下的賽程、
+  // 名單、逐場比分推到看不見 → 收納方式與那兩段一致:整段 details、預設收起,
+  // summary 上先講組數與筆數,來源說明一併收進去(收起時不該懸在外面沒有主詞)。
   if ((T.standings || []).length) {
     const anyPromo = T.standings.some(s => s.promoted);
-    html += `<h2 class="sec">🏆 各組名次</h2><div class="card"><table class="plain">
+    const stGroups = new Set(T.standings.map(s => s.group)).size;
+    html += `<details class="card entries-sec">
+      <summary><span>🏆 各組名次</span><small>${stGroups} 組・${T.standings.length} 筆</small></summary>
+      <table class="plain">
       <tr><th>組別</th><th>名次</th><th>單位</th><th>成員</th></tr>` +
       T.standings.map(s => {
         const units = (s.memberUnits && s.memberUnits.length)
@@ -287,8 +293,8 @@ function render() {
         <td>${units}</td>
         <td>${(s.members || []).flatMap(splitMembers).map(playerLink).join("、") || "—"}</td>
       </tr>`;
-      }).join("") + `</table></div>
-      <div class="note">${(() => {
+      }).join("") + `</table>
+      <div class="note" style="margin:10px 14px 12px">${(() => {
         const srcs = new Set(T.standings.map(s => s.source || "derived"));
         const parts = [];
         if (srcs.has("derived")) parts.push("由決賽比分自動推導(循環賽制組別可能無法推導)");
@@ -296,7 +302,8 @@ function render() {
         if (srcs.has("pdf")) parts.push("由官方成績 PDF 匯入");
         if (srcs.has("ocr")) parts.push("由官方成績表圖片辨識並比對參賽名冊校正");
         return "名次" + parts.join(";") + "。";
-      })()}${anyPromo ? "標「晉甲」者為晉升中華民國羽球協會甲組之選手。" : ""}</div>`;
+      })()}${anyPromo ? "標「晉甲」者為晉升中華民國羽球協會甲組之選手。" : ""}</div>
+      </details>`;
   }
 
   // 賽程:抽籤後、開打前最即時的資訊(幾點打、跟誰打),所以排在參賽名單之前。

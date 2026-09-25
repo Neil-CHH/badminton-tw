@@ -275,7 +275,7 @@ table.plain td[rowspan] { vertical-align: top; }
   .match-card .thumb { width: 120px; }
 }
 
-/* 參賽名單整段可收合,summary 兼作區塊標題(樣式對齊 h2.sec) */
+/* 可收合的長區塊(名次/賽程/參賽名單/競賽組別),summary 兼作區塊標題(樣式對齊 h2.sec) */
 details.entries-sec > summary {
   cursor: pointer; user-select: none; list-style: none;
   display: flex; align-items: center; gap: 8px;
