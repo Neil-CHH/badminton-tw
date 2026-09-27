@@ -82,18 +82,21 @@ function schedDayLabel(d) {
   return `${m}/${dd}(${WEEK[new Date(y, m - 1, dd).getDay()]})`;
 }
 
+/* 版型與逐場比分的 matchRow 一致(使用者指定以逐場比分為樣本):
+   標題列「組別 場次・階段」/「日期 時間」,下方左右對戰,中間比分位置放 vs。
+   官方賽程沒有場地,所以右側不接場地;也沒有局分列。 */
 function schedRow(x) {
   const t = SCHED_TYPE[x.type] || x.type || "";
   const s = x.sides;
-  const side = i => `<div class="side${i ? " B" : ""}">` +
-    (s[i].members.length
-      ? s[i].members.map(m => `<a href="./player.html?name=${encodeURIComponent(m)}">${esc(m)}</a>`).join("、")
-      : `<b>${esc(s[i].unit || "—")}</b>`) +
-    (s[i].members.length && s[i].unit ? `<div class="unit">${esc(s[i].unit)}</div>` : "") + `</div>`;
-  return `<div class="srow">
-    <div class="head"><span>${esc(x.group)}${x.label ? " " + esc(x.label) : ""}</span>
-      <span>${t ? `<span class="tag">${esc(t)}</span>` : ""}${schedDayLabel(x.date)} ${esc(x.time)}</span></div>
-    ${s ? `<div class="vs">${side(0)}<div class="vs-x">vs</div>${side(1)}</div>`
+  const side = i => `<div class="side${i ? " B" : ""}">
+    <div class="pname">${s[i].members.map(playerLink).join("、") || "—"}</div>
+    <div class="unit">${s[i].unit ? unitLink(s[i].unit) : ""}</div></div>`;
+  return `<div class="mrow sched">
+    <div class="head">
+      <span>${esc(x.group)}${x.label ? " " + esc(x.label) : ""}${t ? "・" + esc(t) : ""}</span>
+      <span>${esc(fmtDate(x.date))} ${esc(x.time || "")}</span>
+    </div>
+    ${s ? `<div class="vs">${side(0)}<div class="score">vs</div>${side(1)}</div>`
         : `<div class="tbd">對戰組合待預賽結束後確定</div>`}
   </div>`;
 }
@@ -325,7 +328,7 @@ function render() {
             ${sgrps.map(g => `<option>${esc(g)}</option>`).join("")}</select>
           <input type="search" id="s-kw" placeholder="選手姓名或單位">
         </div>
-        <div id="slist"></div>
+        <div class="card" id="slist"></div>
         <button class="btn-more" id="s-more" style="display:none"></button>
         <div class="note" style="margin-bottom:0">賽程取自官方賽程表,時間為預定開賽時間,
           實際以現場公告為準;官方賽程未提供場地與球場編號。${
