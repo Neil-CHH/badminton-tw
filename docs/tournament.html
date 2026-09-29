@@ -30,12 +30,29 @@ let ENTRY_GROUPS = [], entrySel = -1;
 let SCHED = [], schedShown = PAGE, schedDay = "";
 let DRAWS = new Map();   // 組別 → 抽籤結果(LAPGO 開打前的分組籤表)
 
+/* 單位關鍵字比對(同校不同寫法也算,見 common.js unitMatcher)。
+   「中市四維」這種沒寫學制的關鍵字,以本場出現過的單位寫法推定學制。 */
+let _hitKw = null, _hitFn = null, _unitPool = null;
+function unitPool() {
+  if (_unitPool) return _unitPool;
+  const cnt = new Map(), add = u => { if (u) cnt.set(u, (cnt.get(u) || 0) + 1); };
+  (T.matches || []).forEach(m => { add(m.teamA); add(m.teamB); });
+  (T.entries || []).forEach(e => add(e.unit));
+  (T.draws || []).forEach(d => d.pools.forEach(p => p.seats.forEach(s => add(s.unit))));
+  (T.schedule || []).forEach(x => (x.sides || []).forEach(sd => add(sd.unit)));
+  return (_unitPool = [...cnt]);
+}
+function unitHit(unit, kw) {
+  if (kw !== _hitKw) { _hitKw = kw; _hitFn = unitMatcher(kw, unitPool()); }
+  return _hitFn(unit);
+}
+
 /* 抽籤結果:預賽畫成一格一小組(同組互為對手),純淘汰畫成籤位順序。
    kw 非空時只留符合的籤位;回傳 { hits, html }。 */
 function drawHTML(d, kw) {
   let hits = 0;
   const pools = d.pools.map(p => {
-    const seats = p.seats.filter(s => !kw || unitMatches(s.unit, kw) || s.members.some(m => m.includes(kw)));
+    const seats = p.seats.filter(s => !kw || unitHit(s.unit, kw) || s.members.some(m => m.includes(kw)));
     hits += seats.length;
     if (!seats.length) return "";
     return `<div class="pool"><div class="pool-h">${d.format === "pool" ? `${esc(p.name)} 組` : "籤位"}</div>` +
@@ -108,7 +125,7 @@ function filteredSchedule() {
   if (schedDay) rows = rows.filter(x => x.date === schedDay);
   if (grp) rows = rows.filter(x => x.group === grp);
   if (kw) rows = rows.filter(x => (x.sides || []).some(sd =>
-    unitMatches(sd.unit, kw) || sd.members.some(m => m.includes(kw))));
+    unitHit(sd.unit, kw) || sd.members.some(m => m.includes(kw))));
   return rows;
 }
 
@@ -135,7 +152,7 @@ function renderEntries() {
         const r = drawHTML(DRAWS.get(g), kw);
         return r.hits ? `<div class="entry-g">${esc(g)} <small>(${r.hits})</small></div>` + r.html : "";
       }
-      const hit = people.filter(([nm, u]) => nm.includes(kw) || unitMatches(u, kw));
+      const hit = people.filter(([nm, u]) => nm.includes(kw) || unitHit(u, kw));
       return hit.length ? `<div class="entry-g">${esc(g)} <small>(${hit.length})</small></div>` + entryRowsHTML(hit) : "";
     }).join("") || `<div class="empty" style="padding:16px 0">名單中查無「${esc(kw)}」</div>`;
     return;
@@ -195,7 +212,7 @@ function filteredMatches() {
   let rows = T.matches || [];
   if (grp) rows = rows.filter(m => baseGroup(m.groupName) === grp);
   if (kw) rows = rows.filter(m =>
-    unitMatches(m.teamA, kw) || unitMatches(m.teamB, kw) ||
+    unitHit(m.teamA, kw) || unitHit(m.teamB, kw) ||
     (m.scoreinfo || []).some(si =>
       (si.memberA || "").includes(kw) || (si.memberB || "").includes(kw)));
   return rows;

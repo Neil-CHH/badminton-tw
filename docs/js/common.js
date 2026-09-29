@@ -202,23 +202,43 @@ function sameSchool(a, b) {
   return !!(a && b && a.core.length >= 2 && a.core === b.core &&
     (!a.level || !b.level || a.level === b.level));
 }
-/* 關鍵字 kw 是否指到單位 unit:子字串,或同一所學校的另一種寫法
+/* 回傳判斷函式 unit → 關鍵字 kw 是否指到該單位:子字串,或同一所學校的另一種寫法
    (搜「中市四維」要找得到「四維國小」,兩者不互相包含)。縣市有寫且不同的不算。
-   雙打搭檔分屬兩校的「甲校/乙校」拆開逐一比。 */
+   雙打搭檔分屬兩校的「甲校/乙校」拆開逐一比。
+   kw 有縣市卻沒寫學制(「中市四維」)時,由 pool([[單位名, 權重]…])推定學制:
+   先看有寫同一縣市的寫法(中市四維國小、臺中市四維國小),沒有才看全部相容寫法,
+   取權重最高的學制 —— 不然「花蓮四維高中」會被當成「中市四維」一起收。 */
 const _ukCache = new Map();
 function _uk(s) {
   if (!_ukCache.has(s)) _ukCache.set(s, unitKey(s));
   return _ukCache.get(s);
 }
-function unitMatches(unit, kw) {
-  unit = String(unit || "");
-  if (!kw || unit.includes(kw)) return true;
-  const qk = _uk(kw);
-  if (!qk) return false;
-  return unit.split(/[\/／、]/).some(u => {
-    const k = _uk(u.trim());
-    return sameSchool(qk, k) && (!qk.county || !k.county || qk.county === k.county);
-  });
+function unitMatcher(kw, pool) {
+  const qk = kw ? _uk(kw) : null;
+  let key = qk;
+  if (qk && qk.county && !qk.level && pool) {
+    const same = {}, any = {};
+    for (const [n, w] of pool) {
+      for (const part of String(n).split(/[\/／、]/)) {
+        const k = _uk(part.trim());
+        if (!sameSchool(qk, k) || !k.level) continue;
+        if (k.county === qk.county) same[k.level] = (same[k.level] || 0) + (w || 1);
+        else if (!k.county) any[k.level] = (any[k.level] || 0) + (w || 1);
+      }
+    }
+    const t = Object.keys(same).length ? same : any;
+    const level = Object.keys(t).sort((a, b) => t[b] - t[a])[0] || "";
+    key = { ...qk, level };
+  }
+  return unit => {
+    unit = String(unit || "");
+    if (!kw || unit.includes(kw)) return true;
+    if (!key) return false;
+    return unit.split(/[\/／、]/).some(u => {
+      const k = _uk(u.trim());
+      return sameSchool(key, k) && (!key.county || !k.county || key.county === k.county);
+    });
+  };
 }
 
 function playerLink(name) {
