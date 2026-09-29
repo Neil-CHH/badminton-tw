@@ -35,7 +35,7 @@ let DRAWS = new Map();   // 組別 → 抽籤結果(LAPGO 開打前的分組籤�
 function drawHTML(d, kw) {
   let hits = 0;
   const pools = d.pools.map(p => {
-    const seats = p.seats.filter(s => !kw || (s.unit || "").includes(kw) || s.members.some(m => m.includes(kw)));
+    const seats = p.seats.filter(s => !kw || unitMatches(s.unit, kw) || s.members.some(m => m.includes(kw)));
     hits += seats.length;
     if (!seats.length) return "";
     return `<div class="pool"><div class="pool-h">${d.format === "pool" ? `${esc(p.name)} 組` : "籤位"}</div>` +
@@ -108,7 +108,7 @@ function filteredSchedule() {
   if (schedDay) rows = rows.filter(x => x.date === schedDay);
   if (grp) rows = rows.filter(x => x.group === grp);
   if (kw) rows = rows.filter(x => (x.sides || []).some(sd =>
-    sd.unit.includes(kw) || sd.members.some(m => m.includes(kw))));
+    unitMatches(sd.unit, kw) || sd.members.some(m => m.includes(kw))));
   return rows;
 }
 
@@ -135,7 +135,7 @@ function renderEntries() {
         const r = drawHTML(DRAWS.get(g), kw);
         return r.hits ? `<div class="entry-g">${esc(g)} <small>(${r.hits})</small></div>` + r.html : "";
       }
-      const hit = people.filter(([nm, u]) => nm.includes(kw) || u.includes(kw));
+      const hit = people.filter(([nm, u]) => nm.includes(kw) || unitMatches(u, kw));
       return hit.length ? `<div class="entry-g">${esc(g)} <small>(${hit.length})</small></div>` + entryRowsHTML(hit) : "";
     }).join("") || `<div class="empty" style="padding:16px 0">名單中查無「${esc(kw)}」</div>`;
     return;
@@ -195,7 +195,7 @@ function filteredMatches() {
   let rows = T.matches || [];
   if (grp) rows = rows.filter(m => baseGroup(m.groupName) === grp);
   if (kw) rows = rows.filter(m =>
-    (m.teamA || "").includes(kw) || (m.teamB || "").includes(kw) ||
+    unitMatches(m.teamA, kw) || unitMatches(m.teamB, kw) ||
     (m.scoreinfo || []).some(si =>
       (si.memberA || "").includes(kw) || (si.memberB || "").includes(kw)));
   return rows;

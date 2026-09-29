@@ -202,6 +202,24 @@ function sameSchool(a, b) {
   return !!(a && b && a.core.length >= 2 && a.core === b.core &&
     (!a.level || !b.level || a.level === b.level));
 }
+/* 關鍵字 kw 是否指到單位 unit:子字串,或同一所學校的另一種寫法
+   (搜「中市四維」要找得到「四維國小」,兩者不互相包含)。縣市有寫且不同的不算。
+   雙打搭檔分屬兩校的「甲校/乙校」拆開逐一比。 */
+const _ukCache = new Map();
+function _uk(s) {
+  if (!_ukCache.has(s)) _ukCache.set(s, unitKey(s));
+  return _ukCache.get(s);
+}
+function unitMatches(unit, kw) {
+  unit = String(unit || "");
+  if (!kw || unit.includes(kw)) return true;
+  const qk = _uk(kw);
+  if (!qk) return false;
+  return unit.split(/[\/／、]/).some(u => {
+    const k = _uk(u.trim());
+    return sameSchool(qk, k) && (!qk.county || !k.county || qk.county === k.county);
+  });
+}
 
 function playerLink(name) {
   return `<a href="./player.html?name=${encodeURIComponent(name)}">${esc(name)}</a>`;
