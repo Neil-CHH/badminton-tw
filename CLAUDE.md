@@ -135,7 +135,14 @@ HeadGroup / scoreinfo[]`。沒對上不會報錯,而是**靜默產生空的選�
   自動解析成績總表(mylivescore 的 PDF 是可抽文字的向量表格,不必視覺判讀);
   成績總表不在 mylivescore、只能人工取得的少數賽事登錄在 `LOCAL_SUMMARY` → 讀 `Ref/`
   的本地檔(pdf 或 xlsx 版面完全一樣,共用同一支 `scan_table`)
-- `scripts/parse_entry_pdf.py` — **官方名單 PDF → entries(source=signup)**,吃四種版面。
+- `scripts/parse_entry_pdf.py` — **官方名單 PDF → entries(source=signup)**,吃五種版面。
+  第五種是 **LAPGO 團體名冊**(2026-10 加,`parse_lapgo_roster`,lapgo-145 EMBA 首見):
+  表頭同樣是「編號｜隊名｜選手」,但「選手」是橫跨 5 欄的合併格、一隊 20 人疊成 4 列,
+  走座標會把第一位選手讀成隊名、四個姓名黏成一串(上線前攔下 153 筆亂碼)。它**有格線**,
+  改走 `find_tables()`;判準是表頭三欄之後只剩空格,所以要排在 `is_lapgo` 之前。
+  **每頁都重印組別標題**,同名標題是續頁 → 宣告數不可累加(累加會變 61 vs 107)。
+  另:寫回 `groups[]` 前組名要先 `normalize_cjk` —— PDF 組名帶 CJK 筆畫(lapgo-32
+  「㇐般社會組」)時,不轉會每跑一次就多加一筆同名組別(實測累積到 5 筆)。
   第四種是 **LAPGO 的「抽籤結果」籤表 PDF**(2026-09-23 加,`parse_lapgo_draw`)——
   主辦偶爾只貼籤表不貼名單(lapgo-32 花蓮市長盃 24 頁 23 組,整場零選手可查)。
   空間排版、**無格線**:標題「N.組別：M 隊」自帶宣告數,席位號列**整列都是純數字**

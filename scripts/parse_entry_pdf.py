@@ -45,7 +45,8 @@ ROOT = Path(__file__).resolve().parent.parent
 TOURN_DIR = ROOT / "docs" / "data" / "tournaments"
 sys.path.insert(0, str(ROOT / "scripts"))
 from parse_result_pdf import clean_name, match_roster, resolve_group  # noqa: E402
-from sources_common import SRC_LAPGO, source_of, write_if_changed     # noqa: E402
+from sources_common import (SRC_LAPGO, normalize_cjk, source_of,     # noqa: E402
+                            write_if_changed)
 
 CACHE = ROOT / "inbox" / "entrypdf"          # inbox 已 gitignore
 # mylivescore 叫「報名結果」、LAPGO 的公告叫「選手名單」,兩邊都是同一件事:誰報了名。
@@ -628,6 +629,74 @@ def parse_lapgo_2024(doc):
     return declared, people, {g: len(v) for g, v in got.items()}
 
 
+# ---- LAPGO 團體名冊版面(有格線,「選手」表頭是合併格) ----
+# 2026-10 lapgo-145 EMBA 邀請賽第一次出現,團體一隊二十人疊成四列:
+#
+#     團體賽-競技組【共8組】                         ← 表格內第一列
+#     編號 │ 隊名     │ 選手(合併格,橫跨 5 欄)
+#     1-1  │ 中山大學 │ 康敏捷 │ 梁慶祥 │ 周文山 │ 黃元志 │ 王朝陽
+#          │          │ 徐國華 │ …                       ← 續列:編號、隊名都是合併格
+#
+# 表頭看起來和 parse_lapgo 一樣是「編號｜隊名｜選手」,但走座標會切錯:隊名格垂直
+# 置中、文字順序跑到頁尾,「選手」只有一個表頭卻有五欄 —— 實測把第一位選手讀成隊名、
+# 每人重複四次。這版**有格線**,`find_tables()` 每格都乾淨,所以和 2024 版一樣走表格。
+# 判準是表頭列「編號、隊名、選手」之後**只剩空格**(合併格);parse_lapgo 的兩欄並排
+# 版面表頭是同一組欄名重複,不會撞到。
+
+
+def _roster_header(cells):
+    roles = [_lapgo_role(c) for c in cells[:3]]
+    return (roles == ["no", "unit", "name"] and len(cells) > 3
+            and not any(cells[3:]))
+
+
+def is_lapgo_roster(doc):
+    for page in doc:
+        for t in page.find_tables().tables:
+            for row in t.extract()[:4]:
+                if _roster_header([(c or "").strip() for c in row]):
+                    return True
+    return False
+
+
+def parse_lapgo_roster(doc):
+    """LAPGO 團體名冊 → (declared, people, got)。people=[(組別,單位,姓名,原字串)]。
+
+    一頁可以有好幾張表(雙打友誼賽兩組各一張),組別標題在表格內第一列;續列的編號與
+    隊名是合併格(extract 回 None),沿用上一個編號。分母是隊數,got 算不重複的編號。
+    """
+    declared, people, got = {}, [], defaultdict(set)
+    group = None
+    for page in doc:
+        for t in page.find_tables().tables:
+            seat = unit = None
+            for row in t.extract():
+                cells = [(c or "").strip() for c in row]
+                if cells[0] and not any(cells[1:]):
+                    m = _LAPGO_TITLE.match(cells[0])
+                    if m and m.group(1).strip():
+                        # 這版**每頁都重印標題**(卓越組 15 隊佔三頁、三頁都寫【共15組】),
+                        # 同名標題是續頁不是新組,累加會讓分母翻倍(實測 61 vs 107)
+                        group = m.group(1).strip()
+                        declared[group] = int(m.group(2))
+                        seat = unit = None
+                    continue
+                if _roster_header(cells):
+                    continue
+                if _LAPGO_SEAT.match(cells[0]):
+                    seat, unit = cells[0], cells[1]
+                elif cells[0]:
+                    seat = unit = None            # 認不得的列,不讓後面的人掛錯隊
+                if not seat or not group:
+                    continue
+                got[group].add(seat)
+                for name in cells[2:]:
+                    # 單字的姓名格一定是碎片不是人(見 parse_lapgo)
+                    if len(name) > 1 and _lapgo_role(name) != "name":
+                        people.append((group, unit, name, name))
+    return declared, people, {g: len(v) for g, v in got.items()}
+
+
 # ---- LAPGO 抽籤結果籤表 PDF(空間排版,無格線) ----
 # 主辦偶爾不貼名單、只貼籤表(lapgo-32 花蓮市長盃 24 頁 23 組 229 隊,整場零選手可查)。
 # 版面是一張張籤表樹:
@@ -750,6 +819,8 @@ def read_doc(doc):
         for g, _cells, _cols in rows:
             got[g] += 1
         return declared, rows_to_people(rows), dict(got)
+    if is_lapgo_roster(doc):                    # 要在 is_lapgo 之前:表頭欄名相同
+        return parse_lapgo_roster(doc)
     if is_lapgo(doc):
         return parse_lapgo(doc)
     if is_lapgo_2024(doc):
@@ -866,9 +937,17 @@ def process(openid, apply=False, local=None):
         t["entries"] = kept + entries
         if not kept:
             t["entriesCoverage"] = coverage
-        alive = {e["group"] for e in t["entries"]}
-        have = {g.get("name") for g in t.get("groups") or []}
-        groups = t.get("groups") or []
+        # 比對前先 normalize_cjk:PDF 的組名可能帶 CJK 筆畫(lapgo-32「㇐般社會組」),
+        # 檔裡存的是 write_if_changed 正規化過的「一般社會組」。不先轉的話每跑一次
+        # 都判成新組別再加一筆,實測累積到同名 5 筆。既有的重複也順手去掉。
+        alive = {normalize_cjk(e["group"]) for e in t["entries"]}
+        groups, have = [], set()
+        for g in t.get("groups") or []:
+            name = normalize_cjk(g.get("name"))
+            if name and name in have and not g.get("id"):
+                continue
+            have.add(name)
+            groups.append(g)
         for g in sorted(alive - have):
             groups.append({"id": "", "name": g, "tags": [], "drawUrl": None})
         t["groups"] = groups
