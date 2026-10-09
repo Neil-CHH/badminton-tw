@@ -101,8 +101,15 @@ function rankLabel(r) {
 function rankClass(r) { return r <= 3 ? `rank-${r}` : ""; }
 
 function baseGroup(g) { return String(g || "").replace(/\[[^\]]*\]\s*$/, "").trim(); }
+/* 與 rebuild_index.split_members 一致:「HUANG BO-LUN」這種只有一側帶空白的
+   羅馬拼音名字是一個人;「Raymond-Walter」「Chan Julia-Lin Austin」才是雙打。 */
 function splitMembers(raw) {
-  return String(raw || "").split(/[-/、,，]/).map(s => s.trim()).filter(Boolean);
+  const s = String(raw || "").trim();
+  if (/^[A-Za-z][A-Za-z' ]*[A-Za-z]-[A-Za-z][A-Za-z' ]*$/.test(s)) {
+    const [l, r] = s.split("-");
+    if (l.trim().includes(" ") !== r.trim().includes(" ")) return [s];
+  }
+  return s.split(/[-/、,，]/).map(x => x.trim()).filter(Boolean);
 }
 
 function qs(name) { return new URLSearchParams(location.search).get(name) || ""; }

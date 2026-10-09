@@ -20,15 +20,17 @@
 
 保留 SOURCE_PRIORITY 高的那份(mylivescore 最優先);刪除前還要通過支配性檢查
 (dominates):shadow 不能有任何 canonical 缺少的東西,否則只警告不動檔。
+唯一的例外是參賽名單 entries[]:它是「誰報了名」的事實,跟來源無關,可以原樣搬進
+canonical(carry_entries),搬完再刪 —— 見 carry_entries 的說明。
 """
 import json
-import re
 import sys
 from datetime import date
 from difflib import SequenceMatcher
 from itertools import combinations
 from pathlib import Path
 
+from rebuild_index import base_group, split_members
 from sources_common import (blocked_openids, best_standing_source, effective_dates,
                             group_keys, load_duplicates, match_date_range, merge_standings,
                             norm_group_key, norm_tourn_name, save_duplicates, source_of,
@@ -43,7 +45,6 @@ GROUP_JACCARD = 0.85
 # 把門檻放寬到 0.15/4 仍然只有那 1 組,所以這兩個數字有很大的安全邊際。
 AWARD_OVERLAP = 0.15
 AWARD_MIN = 4
-_MEMBER_SPLIT = re.compile(r"[-/、,,]")
 # 斷路器:單次刪除上限。規則若因來源改版而退化,寧可整批中止也不要無聲掃掉整站。
 BREAKER_MIN = 3
 BREAKER_PCT = 0.03
@@ -77,10 +78,8 @@ def award_triples(t):
     for s in t.get("standings") or []:
         g = norm_group_key(s.get("group"))
         for nm in s.get("members") or []:
-            for nm2 in _MEMBER_SPLIT.split(nm or ""):
-                nm2 = nm2.strip()
-                if nm2:
-                    out.add((nm2, g, s.get("rank")))
+            for nm2 in split_members(nm):
+                out.add((nm2, g, s.get("rank")))
     return out
 
 
@@ -127,9 +126,51 @@ def dominates(canonical, shadow):
     for g, prio in best_standing_source(shadow).items():
         if prio > can_best.get(g, 0):
             return False, f"shadow 組別「{g}」的名次來源優先度較高"
-    if (shadow.get("entries") or []) and not (canonical.get("entries") or []):
-        return False, "shadow 有參賽名單而 canonical 沒有"
+    # shadow 獨有的參賽名單不擋:刪檔前由 carry_entries 搬進 canonical
     return True, ""
+
+
+def carry_entries(canonical, shadow):
+    """shadow 有、canonical 沒有的參賽名單列,組名換成 canonical 的寫法後回傳。
+
+    2026-10 福爾摩沙盃(337676 mylivescore × lapgo-129):mylivescore 開賽前就排好了
+    對戰表,但**團體賽只列隊名、隊員要等那一點開打才填**,LAPGO 的選手名單卻早就列出
+    兩個團體組 168 位隊員。以前「shadow 有名單」就整組交給人工,結果兩張卡片並存;
+    直接刪又會讓這些人查不到,報了名卻沒被排上場的隊員更是永遠查不到。
+    名單是「誰報了名」的事實,跟哪個平台收錄無關,所以搬進 canonical 再刪
+    (scrape.py 會把 entries 從 existing 帶過去,月更不會洗掉)。
+    組別在 dominates 已確認是 canonical 的子集,組名換成 canonical 的寫法,
+    前端與索引才會把它們跟比分歸在同一組。
+    """
+    names = {}
+    for g in canonical.get("groups") or []:
+        names.setdefault(norm_group_key(g.get("name")), base_group(g.get("name")))
+    for s in canonical.get("standings") or []:
+        names.setdefault(norm_group_key(s.get("group")), base_group(s.get("group")))
+    have = {(norm_group_key(e.get("group")), tuple(sorted(e.get("members") or [])))
+            for e in canonical.get("entries") or []}
+    out = []
+    for e in shadow.get("entries") or []:
+        key = (norm_group_key(e.get("group")), tuple(sorted(e.get("members") or [])))
+        if key in have:
+            continue
+        have.add(key)
+        out.append({**e, "group": names.get(key[0]) or e.get("group")})
+    return out
+
+
+def absorb_entries(shadow, canonical_path):
+    """把 shadow 的參賽名單寫進 canonical 檔。回傳搬了幾筆。"""
+    can = json.loads(canonical_path.read_text(encoding="utf-8"))
+    extra = carry_entries(can, shadow)
+    if not extra:
+        return 0
+    can["entries"] = (can.get("entries") or []) + extra
+    if can.get("entriesCoverage") is None and shadow.get("entriesCoverage") is not None:
+        can["entriesCoverage"] = shadow["entriesCoverage"]
+    canonical_path.write_text(json.dumps(can, ensure_ascii=False, separators=(",", ":")),
+                              encoding="utf-8")
+    return len(extra)
 
 
 def detect(tours):
@@ -213,6 +254,9 @@ def merge_and_drop(shadow_id, canonical_id, dry=False):
         return 0
     can["standings"] = merged
     cp.write_text(json.dumps(can, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    n = absorb_entries(sh, cp)
+    if n:
+        print(f"{canonical_id} 併入 {shadow_id} 的參賽名單 {n} 筆")
     pairs = load_duplicates()
     if shadow_id not in blocked_openids():
         pairs.append({"canonical": canonical_id, "shadow": shadow_id,
@@ -270,6 +314,9 @@ def main():
         print(f"  {can['openid']:<12} {can['_src']:<12} {can['_matches']:>5}  ←  "
               f"{sh['openid']:<12} {sh['_matches']:>5}   {ratio:.2f}  {gj:.2f}  "
               f"{can['name'][:34]}")
+        n = len(carry_entries(can, sh))
+        if n:
+            print(f"      併入 shadow 的參賽名單 {n} 筆")
 
     cap = max(BREAKER_MIN, int(len(tours) * BREAKER_PCT))
     if len(deletable) > cap:
@@ -285,14 +332,18 @@ def main():
     today = date.today().isoformat()
     for can, sh, _, _, _ in deletable:
         # 已登錄的不重複寫入(檔案被 git checkout 救回時會再走到這裡)
+        n = absorb_entries(sh, can["_path"])
         if sh["openid"] not in known:
-            pairs.append({
+            pair = {
                 "canonical": can["openid"],
                 "shadow": sh["openid"],
                 "name": can.get("name", ""),
                 "shadowUrl": sh.get("sourceUrl") or "",
                 "detected": today,
-            })
+            }
+            if n:
+                pair["note"] = f"shadow 的參賽名單 {n} 筆已併入 canonical"
+            pairs.append(pair)
         sh["_path"].unlink(missing_ok=True)
     save_duplicates(pairs)
     print(f"\n已刪除 {len(deletable)} 個重複賽事檔,並登錄至 scripts/duplicates.json。")

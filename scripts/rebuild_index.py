@@ -22,6 +22,12 @@ DATA_DIR = ROOT / "docs" / "data"
 TOURN_DIR = DATA_DIR / "tournaments"
 
 NAME_SPLIT = re.compile(r"[-/、,,]")
+# 「HUANG BO-LUN」「Chang Yi-Jui」「ZHI-RON TAN」:羅馬拼音名字裡的連字號,不是雙打分隔。
+# 不能用「英文字母之間的 - 不拆」—— 全庫 93 筆英文-英文絕大多數是真的雙打
+# (Raymond-Walter、Chan Julia-Lin Austin)。分得出來的是形狀:名字是「姓 名-名」,
+# 只有一側帶空白;雙打是兩個對等的人,兩側同樣有空白或同樣沒有。
+# 只認整串只有這一個分隔符的情形,混了全形逗號/中英並列的亂格式照舊拆。
+_HYPHEN_NAME = re.compile(r"^[A-Za-z][A-Za-z' ]*[A-Za-z]-[A-Za-z][A-Za-z' ]*$")
 SHARDS = 16
 
 
@@ -34,8 +40,13 @@ def shard_of(name, n=SHARDS):
 
 
 def split_members(raw):
-    """'馬瀚/許蓁樺' 或 '林姝華-林紓嫻' → 個別姓名。"""
-    return [n.strip() for n in NAME_SPLIT.split(raw or "") if n.strip()]
+    """'馬瀚/許蓁樺' 或 '林姝華-林紓嫻' → 個別姓名。與 common.js splitMembers 一致。"""
+    raw = (raw or "").strip()
+    if _HYPHEN_NAME.match(raw):
+        left, right = raw.split("-")
+        if (" " in left.strip()) != (" " in right.strip()):
+            return [raw]
+    return [n.strip() for n in NAME_SPLIT.split(raw) if n.strip()]
 
 
 def base_group(group_name):

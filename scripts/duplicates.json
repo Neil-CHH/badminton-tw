@@ -17,6 +17,14 @@
       "detected": "2026-08-21"
     },
     {
+      "canonical": "337676",
+      "shadow": "lapgo-129",
+      "name": "2026第三屆國際福爾摩沙盃羽球錦標賽",
+      "shadowUrl": "https://lapgo.com.tw/web/formosa2026",
+      "detected": "2026-10-09",
+      "note": "shadow 的參賽名單 1878 筆已併入 canonical"
+    },
+    {
       "canonical": "596098",
       "shadow": "lapgo-45",
       "name": "114年新竹市長盃羽球錦標賽",
