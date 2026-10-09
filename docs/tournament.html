@@ -101,7 +101,7 @@ function schedDayLabel(d) {
 
 /* 版型與逐場比分的 matchRow 一致(使用者指定以逐場比分為樣本):
    標題列「組別 場次・階段」/「日期 時間」,下方左右對戰,中間比分位置放 vs。
-   官方賽程沒有場地,所以右側不接場地;也沒有局分列。 */
+   官方賽程沒有場地;球場編號開打當天才排,有才接(court);沒有局分列。 */
 function schedRow(x) {
   const t = SCHED_TYPE[x.type] || x.type || "";
   const s = x.sides;
@@ -111,7 +111,7 @@ function schedRow(x) {
   return `<div class="mrow sched">
     <div class="head">
       <span>${esc(x.group)}${x.label ? " " + esc(x.label) : ""}${t ? "・" + esc(t) : ""}</span>
-      <span>${esc(fmtDate(x.date))} ${esc(x.time || "")}</span>
+      <span>${esc(fmtDate(x.date))} ${esc(x.time || "")}${x.court ? `・第${esc(x.court)}場地` : ""}</span>
     </div>
     ${s ? `<div class="vs">${side(0)}<div class="score">vs</div>${side(1)}</div>`
         : `<div class="tbd">對戰組合待預賽結束後確定</div>`}
@@ -348,7 +348,8 @@ function render() {
         <div class="card" id="slist"></div>
         <button class="btn-more" id="s-more" style="display:none"></button>
         <div class="note" style="margin-bottom:0">賽程取自官方賽程表,時間為預定開賽時間,
-          實際以現場公告為準;官方賽程未提供場地與球場編號。${
+          實際以現場公告為準;官方賽程未提供場地,球場編號開打當天才排定。${
+            (T.matches || []).length ? "已打完的場次不再列出,結果見下方逐場比分。" : ""}${
             tbd ? `其中 ${tbd} 場要等預賽結束才定得出對戰組合。` : ""}</div>
       </div></details>`;
   }

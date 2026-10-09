@@ -604,16 +604,21 @@ def schedule_data(api, info):
     (d) **不可進 `matches[]`** —— 未打的場次沒有勝負,rebuild_index 會把它算進
         出賽統計。schedule 是獨立欄位,索引與分片一概不讀。
 
-    已有比分的賽事不必問:這支對它們同樣回傳,但比分已由 getSessionScoreGrouped
-    收齊、而且帶日期,重複抓只是多一份不會被讀的資料。
+    (e) **多天賽事開打後還要繼續問**(2026-10-09 大佛盃第一天打完才發現):
+        舊寫法「有比分就不問」讓第 2、3 天的 902 場賽程在第一天晚上整份消失。
+        每列帶 `status`,打完的是 `"finish"` —— 那些已經在 matches[] 裡、帶著結果,
+        這裡濾掉,只留還沒打的。`place_num` 開打當天才排(打完的 513 場全有、
+        明後天的全是 null),有值就收成 `court`。
+
+    已結束的賽事不必問:全部場次都已由 getSessionScoreGrouped 收齊、而且帶日期。
     """
     try:
         rows = api.post("/web/searchSession", {"cid": str(info["id"])})
     except Exception as e:                                    # noqa: BLE001
         print(f"  [提醒] lapgo-{info['id']} 賽程讀取失敗:{e}")
-        return []
+        return None
     if not isinstance(rows, list) or not rows:
-        return []                                             # 還沒排賽程
+        return None                                           # 還沒排賽程(或讀取異常)
 
     gnames = canonical_group_names(rows)
     out = []
@@ -621,6 +626,8 @@ def schedule_data(api, info):
         start = r.get("start_datetime") or ""
         if len(start) < 16:
             continue                       # 沒有時間的列對使用者沒有意義
+        if r.get("status") == "finish":
+            continue                       # 已打完,結果在 matches[](見 (e))
         g = gnames.get(r.get("session_group_id")) or ""
         nm = str(r.get("name") or "").strip()
         # 場次代號:優先用 sub_group_index(A1-A2),沒有就取 name 剝掉組別前綴的殘留((一))
@@ -629,6 +636,9 @@ def schedule_data(api, info):
             label = nm[len(g):].strip()
         item = {"group": g, "date": start[:10], "time": start[11:16],
                 "type": str(r.get("type") or "").strip(), "label": label}
+        court = str(r.get("place_num") or "").strip()
+        if court:
+            item["court"] = court
         sides = []
         for t in _load_tp(r):
             members = [unquote(str(m)).strip() for m in (t.get("player") or [])]
@@ -711,6 +721,16 @@ def build_record(api, info, existing, with_news=True):
              "drawUrl": None}
             for g in sorted({base_group(m["groupName"]) for m in matches if m["groupName"]})
         ]
+        # 多天賽事打到一半:比分只涵蓋已開打的組別,還沒打的組別要從開打前的籤表補回來,
+        # 否則「競賽組別」會在第一天晚上少掉一大半(大佛盃 39 組只剩 13 組)。
+        have = {g["name"] for g in record["groups"]}
+        score_url = f"{info['url']}/score" if info.get("url") else None
+        record["groups"] += [
+            {"id": "", "name": dr["group"],
+             "tags": parse_group_tags(dr["group"], HEAD_MAP.get(dr["type"], "")),
+             "drawUrl": score_url}
+            for dr in record.get("draws") or [] if dr["group"] not in have
+        ]
 
     # 抽籤結果:比分上線前唯一拿得到「誰在哪一組、跟誰同組」的地方(見 draw_data)。
     # 比分上線後就不再問 —— 那時選手已由比分登錄,籤表沿用開打前抓到的那份。
@@ -733,15 +753,17 @@ def build_record(api, info, existing, with_news=True):
                 for dr in draws
             ]
 
-        # 賽程:抽籤之後、比分之前才有意義(見 schedule_data)。
-        # **刻意不從 existing 帶過去** —— 比分一上線,matches 自己就帶日期與結果,
-        # 這份「未打場次的預定時間」就成了會過期的噪音,讓它隨著重抓自然消失。
-        # 但這個月讀取失敗(回空)時要保留既有的,免得一次失敗就把賽程清光。
+    # 賽程:抽籤之後到最後一天打完之前都有意義(見 schedule_data)。
+    # 多天賽事開打後仍要問,只留還沒打的場次;賽事結束就不問,讓它隨重抓自然消失
+    # (**刻意不從 existing 帶過去** —— 打完的場次 matches 自己就帶日期與結果)。
+    # 讀取失敗(None)時才保留既有的,免得一次失敗就把賽程清光;但已有比分時不沿用,
+    # 那份舊賽程裡混著已經打完的場次。
+    if not matches or record.get("status") != "finished":
         sched = schedule_data(api, info)
         time.sleep(0.4)
         if sched:
             record["schedule"] = sched
-        elif (existing or {}).get("schedule"):
+        elif sched is None and not matches and (existing or {}).get("schedule"):
             record["schedule"] = existing["schedule"]
 
     # 官方成績總表優先於推導名次;總表沒涵蓋的組別再用 derive_standings 補
