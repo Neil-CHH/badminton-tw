@@ -739,8 +739,19 @@ def build_record(api, info, existing, with_news=True):
     # 沒抽籤的賽事連問 DRAW_EMPTY_STOP 組就停,每月成本很小。
     if not matches:
         d_entries, draws, cov = draw_data(api, info)
+        # 籤位覆蓋率只數籤位、不數人:團體組的籤位只有隊名,填滿了也登錄不到任何隊員。
+        # 既有名單(PDF 團體名冊)查得到的人比籤表多時,整份取代就是把人洗掉 ——
+        # lapgo-145 EMBA 校際盃 669 → 30 人次(三個團體組 609 位隊員消失)。
+        # 那時只存 draws(顯示分組),名單保留 PDF 那份。
+        def _people(es):
+            return len({m for e in es or [] for m in e.get("members") or []})
+        old_people = _people(record.get("entries"))
         if draws and cov is not None and cov < DRAW_MIN_COVERAGE:
             print(f"  [籤表] {openid} 籤位只有官方隊數的 {cov:.0%},疑似還沒抽完,不收")
+        elif draws and _people(d_entries) < old_people * DRAW_MIN_COVERAGE:
+            record["draws"] = draws
+            print(f"  [籤表] {openid} 籤表只登錄得到 {_people(d_entries)} 人"
+                  f"(既有名單 {old_people} 人,多半是團體組只有隊名),名單不取代")
         elif draws:
             record["draws"] = draws
             record["entries"] = d_entries
