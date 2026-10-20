@@ -20,8 +20,14 @@
 
 保留 SOURCE_PRIORITY 高的那份(mylivescore 最優先);刪除前還要通過支配性檢查
 (dominates):shadow 不能有任何 canonical 缺少的東西,否則只警告不動檔。
-唯一的例外是參賽名單 entries[]:它是「誰報了名」的事實,跟來源無關,可以原樣搬進
-canonical(carry_entries),搬完再刪 —— 見 carry_entries 的說明。
+刪除前把 shadow 多出來的東西搬進 canonical(absorb_shadow,2026-10 使用者決定
+「框架以 mylivescore 為主,但 LAPGO 有更多資料就保留」),規則只有一條:
+  - 逐場比分/組別:只用 canonical,絕不混(混了選手勝負翻倍)—— dominates 擋
+  - 單值欄位(報名日期、圖片、場地):canonical 是空值才用 shadow 的(carry_fields)
+  - 事實清單(參賽名單、公告文件):聯集(carry_entries / carry_fields)
+  - 名次:照 merge_standings 既有優先序;shadow 較優時 dominates 擋下交給 --merge
+  - shadow 的 schedule 不搬:canonical 有比分就是重複內容
+補了什麼記在 canonical 的 supplementedFrom;月更不洗掉靠 sources_common.keep_existing_values。
 """
 import json
 import sys
@@ -33,8 +39,8 @@ from pathlib import Path
 from rebuild_index import base_group, split_members
 from sources_common import (blocked_openids, best_standing_source, effective_dates,
                             group_keys, load_duplicates, match_date_range, merge_standings,
-                            norm_group_key, norm_tourn_name, save_duplicates, source_of,
-                            source_priority, year_tokens)
+                            is_blank, FILL_FIELDS, norm_group_key, norm_tourn_name,
+                            save_duplicates, source_of, source_priority, year_tokens)
 
 ROOT = Path(__file__).resolve().parent.parent
 TOURN_DIR = ROOT / "docs" / "data" / "tournaments"
@@ -126,7 +132,7 @@ def dominates(canonical, shadow):
     for g, prio in best_standing_source(shadow).items():
         if prio > can_best.get(g, 0):
             return False, f"shadow 組別「{g}」的名次來源優先度較高"
-    # shadow 獨有的參賽名單不擋:刪檔前由 carry_entries 搬進 canonical
+    # shadow 獨有的參賽名單/單值欄位/文件不擋:刪檔前由 absorb_shadow 搬進 canonical
     return True, ""
 
 
@@ -159,18 +165,52 @@ def carry_entries(canonical, shadow):
     return out
 
 
-def absorb_entries(shadow, canonical_path):
-    """把 shadow 的參賽名單寫進 canonical 檔。回傳搬了幾筆。"""
+def carry_fields(canonical, shadow):
+    """shadow 有、canonical 沒有的單值欄位與文件 → (fields dict, documents list)。
+
+    337676 × lapgo-129:mylivescore 的報名日期是 0000-00-00,只搬名單就刪檔,報名截止日
+    跟著消失,前端一路顯示「報名中」;LAPGO 公告裡的選手名單/抽籤結果連結也一起不見。
+    搬過來的文件帶 source(fetch_docs 重抓 links.php 時才不會整包洗掉)與 carriedFrom。
+    """
+    fields = {k: shadow[k] for k in FILL_FIELDS
+              if is_blank(canonical.get(k)) and not is_blank(shadow.get(k))}
+    have = {d.get("url") for d in canonical.get("documents") or []}
+    docs = []
+    for d in shadow.get("documents") or []:
+        if not d.get("url") or d["url"] in have:
+            continue
+        have.add(d["url"])
+        docs.append({**d, "source": d.get("source") or source_of(shadow),
+                     "carriedFrom": shadow["openid"]})
+    return fields, docs
+
+
+def absorb_shadow(shadow, canonical_path):
+    """把 shadow 多出來的名單、單值欄位、文件寫進 canonical 檔。回傳搬了什麼(list[str])。"""
     can = json.loads(canonical_path.read_text(encoding="utf-8"))
-    extra = carry_entries(can, shadow)
-    if not extra:
-        return 0
-    can["entries"] = (can.get("entries") or []) + extra
-    if can.get("entriesCoverage") is None and shadow.get("entriesCoverage") is not None:
-        can["entriesCoverage"] = shadow["entriesCoverage"]
+    entries = carry_entries(can, shadow)
+    fields, docs = carry_fields(can, shadow)
+    if not (entries or fields or docs):
+        return []
+    what = []
+    if entries:
+        can["entries"] = (can.get("entries") or []) + entries
+        if can.get("entriesCoverage") is None and shadow.get("entriesCoverage") is not None:
+            can["entriesCoverage"] = shadow["entriesCoverage"]
+        what.append(f"參賽名單 {len(entries)} 筆")
+    if fields:
+        can.update(fields)
+        what.append("/".join(fields))
+    if docs:
+        can["documents"] = (can.get("documents") or []) + docs
+        what.append(f"文件 {len(docs)} 份")
+    sup = can.setdefault("supplementedFrom", {})
+    sup[shadow["openid"]] = sorted(set(sup.get(shadow["openid"], []))
+                                   | ({"entries"} if entries else set())
+                                   | set(fields) | ({"documents"} if docs else set()))
     canonical_path.write_text(json.dumps(can, ensure_ascii=False, separators=(",", ":")),
                               encoding="utf-8")
-    return len(extra)
+    return what
 
 
 def detect(tours):
@@ -254,9 +294,9 @@ def merge_and_drop(shadow_id, canonical_id, dry=False):
         return 0
     can["standings"] = merged
     cp.write_text(json.dumps(can, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    n = absorb_entries(sh, cp)
-    if n:
-        print(f"{canonical_id} 併入 {shadow_id} 的參賽名單 {n} 筆")
+    what = absorb_shadow(sh, cp)
+    if what:
+        print(f"{canonical_id} 併入 {shadow_id} 的{'、'.join(what)}")
     pairs = load_duplicates()
     if shadow_id not in blocked_openids():
         pairs.append({"canonical": canonical_id, "shadow": shadow_id,
@@ -315,8 +355,10 @@ def main():
               f"{sh['openid']:<12} {sh['_matches']:>5}   {ratio:.2f}  {gj:.2f}  "
               f"{can['name'][:34]}")
         n = len(carry_entries(can, sh))
-        if n:
-            print(f"      併入 shadow 的參賽名單 {n} 筆")
+        fields, docs = carry_fields(can, sh)
+        what = ([f"參賽名單 {n} 筆"] if n else []) + (["/".join(fields)] if fields else [])             + ([f"文件 {len(docs)} 份"] if docs else [])
+        if what:
+            print(f"      併入 shadow 的{'、'.join(what)}")
 
     cap = max(BREAKER_MIN, int(len(tours) * BREAKER_PCT))
     if len(deletable) > cap:
@@ -332,7 +374,7 @@ def main():
     today = date.today().isoformat()
     for can, sh, _, _, _ in deletable:
         # 已登錄的不重複寫入(檔案被 git checkout 救回時會再走到這裡)
-        n = absorb_entries(sh, can["_path"])
+        what = absorb_shadow(sh, can["_path"])
         if sh["openid"] not in known:
             pair = {
                 "canonical": can["openid"],
@@ -341,8 +383,8 @@ def main():
                 "shadowUrl": sh.get("sourceUrl") or "",
                 "detected": today,
             }
-            if n:
-                pair["note"] = f"shadow 的參賽名單 {n} 筆已併入 canonical"
+            if what:
+                pair["note"] = f"shadow 的{'、'.join(what)}已併入 canonical"
             pairs.append(pair)
         sh["_path"].unlink(missing_ok=True)
     save_duplicates(pairs)

@@ -79,8 +79,10 @@ function effectiveStatus(t) {
   if (end && today > end) return "finished";
   if (ds && today >= ds) return "ongoing";
   const re = t.registerEnd;
-  if (re && !BAD_DATES.has(re) && today > re) return "ongoing";
-  return "registering";
+  if (re && !BAD_DATES.has(re)) return today > re ? "ongoing" : "registering";
+  // 報名截止日是空的(337676 福爾摩沙盃寫 0000-00-00)→ 沒得判,改信來源:
+  // 來源已不是「報名中」就代表報名截止了,不能一律退回 registering
+  return (t.status && t.status !== "registering") ? "ongoing" : "registering";
 }
 /* 「報名截止但還沒開賽」——effectiveStatus 會算成 ongoing(對齊 mylivescore),
    但頁面上有些文案只對「真的開打了」成立,要靠這個分辨。 */

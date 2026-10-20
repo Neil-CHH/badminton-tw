@@ -269,6 +269,40 @@ def _normalize_deep(obj):
     return obj
 
 
+# 單值欄位:API 回空值時沿用檔裡的有效值(keep_existing_values),
+# 也是 dedupe 會從 shadow 補進 canonical 的欄位(dedupe.carry_fields)。
+FILL_FIELDS = ("registerStart", "registerEnd", "dateStart", "dateEnd", "venue", "image")
+
+
+def is_blank(v):
+    return v is None or v == "" or v == "0000-00-00"
+
+
+def keep_existing_values(record, existing):
+    """爬蟲重建的 record 不可以拿空值蓋掉檔裡已有的資料。
+
+    2026-10 福爾摩沙盃 337676:mylivescore 的報名日期是 0000-00-00,有效值來自去重時
+    刪掉的 lapgo-129(dedupe.absorb_shadow 補進來)。shadow 已列入阻擋清單不會再抓,
+    下次月更 API 照樣回空值,不擋在這裡就永遠補不回來,前端也會退回「報名中」。
+    同理,dedupe 搬進來的文件(帶 carriedFrom)與 supplementedFrom 記錄也要帶過去。
+    entries 不在這裡:各爬蟲對名單有自己的取代規則(LAPGO 籤表整份取代 PDF 名單)。
+    """
+    if not existing:
+        return record
+    for k in FILL_FIELDS:
+        if k in record and is_blank(record[k]) and not is_blank(existing.get(k)):
+            record[k] = existing[k]
+    if existing.get("supplementedFrom") and "supplementedFrom" not in record:
+        record["supplementedFrom"] = existing["supplementedFrom"]
+    carried = [d for d in existing.get("documents") or [] if d.get("carriedFrom")]
+    if carried:
+        have = {d.get("url") for d in record.get("documents") or []}
+        extra = [d for d in carried if d.get("url") not in have]
+        if extra:
+            record["documents"] = (record.get("documents") or []) + extra
+    return record
+
+
 def write_if_changed(path, record, existing):
     """內容有變才寫檔。回傳 True 表示真的寫了。
 
@@ -277,7 +311,7 @@ def write_if_changed(path, record, existing):
     用正常字搜不到)。正規化放在比較**之前**,既有檔早已修過,所以不會每月
     因為「檔裡是正字、抓回來是異體字」而反覆重寫。
     """
-    record = _normalize_deep(record)
+    record = _normalize_deep(keep_existing_values(record, existing))
     if same_content(record, existing):
         return False
     path.write_text(json.dumps(record, ensure_ascii=False, separators=(",", ":")),

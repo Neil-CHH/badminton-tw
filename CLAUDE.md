@@ -74,7 +74,19 @@ mylivescore / LAPGO 公告的選手名單 PDF)。LAPGO 的抽籤結果另存 `dr
 使用者決定「mylivescore 有就以 mylivescore 為主」):名單是「誰報了名」的事實、跟平台無關,
 `carry_entries` 把組名換成 canonical 的寫法搬進去再刪。起因是福爾摩沙盃 337676 × lapgo-129:
 mylivescore 開賽前就有對戰表,但**團體賽只列隊名、隊員要開打才填**,LAPGO 名單上兩個團體組
-168 位隊員只有那邊查得到;以前這樣會整組交給人工,兩張卡片並存。另有**斷路器**:單次要刪超過
+168 位隊員只有那邊查得到;以前這樣會整組交給人工,兩張卡片並存。
+**2026-10-20 擴大成通則**(使用者補充:「框架以 mylivescore 為主,但這是資料庫,
+LAPGO 有更多資料就保留」),`absorb_shadow` 一條規則:比分/組別只用 canonical 絕不混;
+單值欄位(`FILL_FIELDS`:報名日期、比賽日期、場地、圖片)canonical 是空值才用 shadow 的;
+名單與公告文件取聯集(搬來的文件帶 `source` + `carriedFrom`,fetch_docs 才不洗掉);
+名次照 `merge_standings`;shadow 的 `schedule` 不搬。補了什麼記在 canonical 的
+`supplementedFrom: {shadow: [欄位…]}`。起因同一場:只搬名單就刪檔,lapgo-129 的報名截止日
+9/22 跟著消失(mylivescore 寫 0000-00-00),前端一路顯示「報名中」。
+⚠️ **shadow 已被阻擋、不會再抓,補進來的是刪檔當下的快照**,所以爬蟲重建 record 時
+不可以拿空值蓋掉它 —— `sources_common.keep_existing_values` 擋在 `write_if_changed`
+(所有爬蟲的共同出口):`FILL_FIELDS` 新值空、舊值有效就沿用,`carriedFrom` 文件與
+`supplementedFrom` 帶過去。entries 不在這裡,各爬蟲有自己的取代規則。
+shadow 之後的更新(LAPGO 賽後的官方成績總表)收不到,刻意不做 —— 不會讓任何人變得查得到。另有**斷路器**:單次要刪超過
 3% 就整批中止。**支配性檢查不可用名次逐列比對** —— canonical 有 pdf 名次時兩邊逐列本來就
 不同(307030 的名次列 Jaccard 只有 0.78),那正是 canonical 較優的證據。
 
@@ -511,7 +523,9 @@ python -m http.server 8765 -d docs   # 本地預覽
   的 status(全是 `normal`),`scrape_lapgo.derive_status()` 只看比賽日期、**不看 registerEnd**,
   於是報名截止後仍留在「報名中」,卡片同時出現「報名中」徽章與「報名已截止」提示而自相矛盾
   (實測 4 場)。統一採 mylivescore 的語意:`今天>dateEnd`→已結束、`今天>=dateStart`→進行中、
-  `今天>registerEnd`→進行中、否則報名中;**沒有日期可判的照抄原值**(tsba 早年 10 場缺
+  `今天>registerEnd`→進行中、否則報名中;**`registerEnd` 是空值/`0000-00-00` 時改信來源**
+(來源不是 registering 就算進行中 —— 337676 福爾摩沙盃報名日期全空、來源標 ongoing、
+對戰表都排好了,舊寫法卻一路退回「報名中」);**沒有日期可判的照抄原值**(tsba 早年 10 場缺
   `dateStart`,亂猜會被丟進「報名中」)。另一個好處是 `status` 本來是抓取當下的快照、月更之間
   會過期,改成當場算就永遠是對的。**賽事 JSON 與爬蟲寫入的 `status` 不動**(同 `effective_dates`
   的原則:保持來源忠實,只在顯示時套規則)。
