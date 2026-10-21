@@ -66,6 +66,9 @@ _COUNT_RE = re.compile(r"^共(\d+)[組籤隊人]$")
 _PLAYER_RE = re.compile(r"^選手(\d+)$")
 _UNIT_RE = re.compile(r"^(隊名|縣市別)(\d*)$")
 _ORDER_RE = re.compile(r"^\d{6,}$")          # 單號:六位以上的報名序號
+_PAID_RE = re.compile(r"付款|繳")           # 繳費狀況:沒有單號欄的版面靠它認資料列
+# (「已付款」之外還有「溢繳」「*溢繳」;團體頁的「已付款」會跟「團體」黏成一個 word,不能錨定結尾)
+LEFT_TOL = 3.0       # 靠左排版的欄界:下一欄起點往左這麼多(實測值與表頭起點差 0~1pt)
 _DRIVE_RE = re.compile(r"^https?://drive\.google\.com/file/d/([\w-]+)", re.I)
 
 # ---- LAPGO 選手名單版面 ----
@@ -166,8 +169,20 @@ def bounds(cols):
     那樣整列都會被判成沒有單號而整段丟掉(實測 8 個團體組共 66 隊憑空消失)。
     """
     xs = [c[0] for c in cols]
-    edges = [(xs[i] + xs[i + 1]) / 2 for i in range(len(xs) - 1)] + [float("inf")]
+    if is_left_aligned(cols):
+        edges = [x - LEFT_TOL for x in xs[1:]] + [float("inf")]
+    else:
+        edges = [(xs[i] + xs[i + 1]) / 2 for i in range(len(xs) - 1)] + [float("inf")]
     return list(zip(edges, (c[1] for c in cols)))
+
+
+def is_left_aligned(cols):
+    """沒有單號、以「繳費狀況」開頭的那一版(2026-10,307031 臺中市長盃)是**靠左**排版:
+    每格的起點就是表頭的起點,中點界線反而會切錯 —— 教練欄常塞三、四個姓名
+    (「何佳穎 羅慧琳 高鈺雯 陳俐諠」),最後一位越過中點落進選手1,解出
+    「陳俐諠柯寶豔」這種假選手(實測 51 筆)。這版改以下一欄的起點為界。"""
+    names = [n for _x, n in cols]
+    return "單號" not in names and any(n.startswith("繳費狀況") for n in names)
 
 
 def assign(row, cols):
@@ -235,7 +250,28 @@ def column_roles(cols):
 
 
 def is_header(texts):
-    return "單號" in texts and ("組別" in texts or "項目" in texts)
+    """「單號」是舊版的第一欄;2026-10 起有一版拿掉單號、改以「繳費狀況」開頭
+    (307031 臺中市長盃 19 頁 1,754 列,只認單號會整份讀不到表頭)。
+    團體頁的「繳費狀況」與「組別」會黏成同一個 word,所以用 startswith。"""
+    return (("單號" in texts or any(t.startswith("繳費狀況") for t in texts))
+            and ("組別" in texts or "項目" in texts))
+
+
+def is_data_row(cells):
+    """資料列一定有報名序號,沒有單號欄的版面則有繳費狀況(「已付款」「溢繳」)。
+    這道過濾同時擋掉頁首標題 —— 標題的字會落進某個欄位區間,不擋就會冒出
+    「2026」這種選手(實測 264311)。
+
+    兩個標記都要認(734564 同一張訂單的多隊只在第一隊印繳費狀況),但**除了這兩欄
+    還要有別的內容**:279956 的單號比同列其他字低 3.3pt(剛好超過 ROW_TOL)而自成
+    一列,不排掉的話一筆會算成兩列(抽到 42 vs 宣告 21)。"""
+    def marker(k):
+        return k == "單號" or k.startswith("繳費狀況")
+    if not (any(_ORDER_RE.match(x) for x in cells.get("單號", []))
+            or any(_PAID_RE.search(x) for k, v in cells.items() if k.startswith("繳費狀況")
+                   for x in v)):
+        return False
+    return any(v for k, v in cells.items() if not marker(k))
 
 
 def _row_pitch(rows):
@@ -316,9 +352,7 @@ def parse_pdf(doc):
             if not cols:
                 continue
             cells = assign(row, cols)
-            # 資料列一定有報名序號。這道過濾同時擋掉頁首標題 —— 標題的字會落進
-            # 某個欄位區間,不擋就會冒出「2026」這種選手(實測 264311)
-            if not any(_ORDER_RE.match(x) for x in cells.get("單號", [])):
+            if not is_data_row(cells):
                 continue
             rows.append((group, cells, tuple(cols)))
     return declared, rows
@@ -342,8 +376,18 @@ def rows_to_people(rows):
             if not name:
                 continue
             unit = team or cell_text(cells.get(units.get(idx, ""), []))
-            out.append((g, unit, name, raw))
+            for mem in _split_glued(name, cols):
+                out.append((g, unit, mem, raw))
     return out
+
+
+def _split_glued(name, cols):
+    """靠左排版的相鄰兩格會被 PDF 印成同一個 word:307031 團體頁「歐陽羽彤吳裔茿」
+    是選手1+選手2(x 450→507,橫過選手2 的起點 484)。五字以上、能用全庫已知選手名
+    **唯一**切開才拆;切不開就照原樣(原住民/外籍姓名本來就可能很長,不猜)。"""
+    if len(name) < 5 or " " in name or not is_left_aligned(cols):
+        return [name]
+    return _split_pair(name, known_players()) or [name]
 
 
 # ---------- 版面二:LAPGO 選手名單 ----------
@@ -810,7 +854,7 @@ def parse_lapgo_draw(doc, known):
 def read_doc(doc):
     """一份 PDF → (declared, people, got),自動判別版面。讀不出來回 None。
 
-    兩種版面的分辨方式都是表頭:mylivescore 的報名結果以「單號」開頭,
+    兩種版面的分辨方式都是表頭:mylivescore 的報名結果以「單號」(或「繳費狀況」)開頭,
     LAPGO 的選手名單是「編號｜隊名｜姓名」成組重複。
     """
     if find_header(doc):
