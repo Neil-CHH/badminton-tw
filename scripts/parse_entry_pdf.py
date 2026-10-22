@@ -133,12 +133,19 @@ def signup_docs(t):
     mylivescore 只取**最新的一份**「報名結果」(舊版還留在 documents 裡,全解會把
     退掉的人又收回來);LAPGO 的名單常拆成個人組/團體組好幾個檔貼在同一篇公告,
     少收任何一個就是整批選手查不到,所以全部都要。documents 已依日期排序。
+
+    mylivescore 的「最新一份」要先在「報名結果」裡找:主辦抽完籤會再貼一份「抽籤結果」
+    (籤表樹,讀不到表頭),它日期最新,單純取 docs[0] 會擋住之後換版的報名結果
+    (307031 的報名結果 1021 新版因此一直讀不到,庫裡留著 1019 舊版)。
     """
     docs = [(d.get("url"), d.get("title") or "") for d in t.get("documents") or []
             if any(k in (d.get("title") or "") for k in SIGNUP_KEYWORDS) and d.get("url")]
     if not docs:
         return []
-    return docs if source_of(t) == SRC_LAPGO else docs[:1]
+    if source_of(t) == SRC_LAPGO:
+        return docs
+    signup = [d for d in docs if "報名結果" in d[1]]
+    return (signup or docs)[:1]
 
 
 def page_rows(page):
@@ -355,7 +362,14 @@ def parse_pdf(doc):
             if not is_data_row(cells):
                 continue
             rows.append((group, cells, tuple(cols)))
-    return declared, rows
+    # 組別標頭偶爾印在該組前幾列之後(309251 的「國小低年級組男子單打 共22組」排在
+    # 該組第 3 列,前兩位男生被算進女單:7 vs 5、20 vs 22)。每列自己的「項目」欄
+    # 是本份宣告過的組名時以它為準;要等整份讀完,宣告才齊(標頭正是晚到的那個)
+    fixed = []
+    for group, cells, cols in rows:
+        item = cell_text(cells.get("項目", []))
+        fixed.append((item if item in declared else group, cells, cols))
+    return declared, fixed
 
 
 def rows_to_people(rows):
