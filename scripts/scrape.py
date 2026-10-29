@@ -224,8 +224,10 @@ def normalize_schedule(schedule, openid=""):
               f"API 可能又改版了,確認 rebuild_index/tournament.html 是否讀得到")
     named = sum(1 for m in out for si in m["scoreinfo"]
                 if (si.get("memberA") or "").strip() or (si.get("memberB") or "").strip())
-    if out and not named:
-        print(f"  [警告] {openid} 抓到 {len(out)} 場比分但**一個選手姓名都沒有** —— "
+    # 只拿打完的場次判斷:開打前的對戰表本來就沒有姓名(團體賽隊員要開打才填)
+    played = sum(1 for m in out if m["winner"].strip() or m["Asidescore"].strip())
+    if played and not named:
+        print(f"  [警告] {openid} 抓到 {played} 場打完的比分但**一個選手姓名都沒有** —— "
               f"這場的選手與單位統計會是空的")
     return out, named
 

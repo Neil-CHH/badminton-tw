@@ -339,10 +339,13 @@ def check_match_shape(tours):
         missing = sorted(set(MATCH_KEYS) - {k for m in ms for k in m})
         if extra or missing:
             bad_keys.append((oid, t, extra, missing))
-        named = sum(1 for m in ms for si in (m.get("scoreinfo") or [])
+        # 只看已經打完的場次:抽籤後、開打前的對戰表本來就沒有姓名(團體賽隊員要開打才填,
+        # 333044 縣長盃 141 場團體賽對戰表曾在這裡誤報成錯誤級)
+        played = [m for m in ms if (m.get("winner") or "").strip() or (m.get("Asidescore") or "").strip()]
+        named = sum(1 for m in played for si in (m.get("scoreinfo") or [])
                     if (si.get("memberA") or "").strip() or (si.get("memberB") or "").strip())
-        if not named:
-            nameless.append((oid, t, len(ms)))
+        if played and not named:
+            nameless.append((oid, t, len(played)))
     for oid, t, extra, missing in bad_keys:
         err(f"{oid}「{(t.get('name') or '')[:20]}」matches 不符契約:"
             + (f"多了 {extra} " if extra else "")
