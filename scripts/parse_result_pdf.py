@@ -50,12 +50,24 @@ _NORM_RE = re.compile(r"[\s()()\[\]【】‧・、,,\-－_/]")
 PLACEHOLDER = ("單位", "選手一", "選手二", "隊名", "隊伍")
 # 姓名切分:官方 PDF 也用全形斜線,rebuild_index.NAME_SPLIT 沒收這個字元
 _EXTRA_SPLIT = re.compile(r"[／・]")
+_CJK_NAME = re.compile(r"^[㐀-鿿\U00020000-\U0002ffff]{2,4}$")
 
 
-def split_names(cell):
+def split_names(cell, k=None):
+    """k = 這組一筆名次該有幾人(event_arity)。
+
+    雙打搭檔偶爾只用空白隔開(331891「余檜 吳秉家」,同一張表其他格都用 /),
+    split_members 刻意不拆空白(外文姓名、日本選手的「光武 佑香」都帶空白),
+    clean_name 再把空白刪掉就黏成一位不存在的「余檜吳秉家」。
+    只在「雙打組、只切出 1 人、空白剛好分成 2 段純中文姓名」時拆 ——
+    單打組的「光武 佑香」不受影響。"""
     out = []
     for part in _EXTRA_SPLIT.split(cell or ""):
         out.extend(split_members(part))
+    if k == 2 and len(out) == 1:
+        tokens = out[0].split()
+        if len(tokens) == 2 and all(_CJK_NAME.match(x) for x in tokens):
+            out = tokens
     return [n for n in (clean_name(x) for x in out) if n]
 
 
@@ -348,13 +360,13 @@ def read_row(cells_row, name_row, ranks, group, all_players):
         if name_row and j < len(name_row) and name_row[j]:
             unit = join_wrapped(cell_lines(cells_row[j])) \
                 if j < len(cells_row) else ""
-            names = split_names(name_row[j])
+            names = split_names(name_row[j], k)
         elif j < len(cells_row):
             lines = cell_lines(cells_row[j])
             if len(lines) == 1 and paired:
                 # 成對格的列裡出現單行 → 官方漏填單位,留下來的是選手
                 # (259196 乙組男單並列第五的黃子耀,PDF 上單位格真的是空的)
-                names = split_names(lines[0])
+                names = split_names(lines[0], k)
             elif len(lines) <= 1:
                 unit = join_wrapped(lines)
             else:
@@ -366,9 +378,9 @@ def read_row(cells_row, name_row, ranks, group, all_players):
                 # 對不上,團體組會全數落空(341170/765740/535938 共 22 組)。
                 if lines[-1] in all_players:
                     unit = join_wrapped(lines[:-1])
-                    names = split_names(lines[-1])
+                    names = split_names(lines[-1], k)
                 elif joined in all_players:
-                    names = split_names(joined)
+                    names = split_names(joined, k)
                 elif all_players:
                     unit = joined      # 有名單可查卻查無 → 折行的單位名
                 else:
