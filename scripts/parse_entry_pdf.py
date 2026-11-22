@@ -69,6 +69,8 @@ _ORDER_RE = re.compile(r"^\d{6,}$")          # 單號:六位以上的報名序�
 _PAID_RE = re.compile(r"付款|繳")           # 繳費狀況:沒有單號欄的版面靠它認資料列
 # (「已付款」之外還有「溢繳」「*溢繳」;團體頁的「已付款」會跟「團體」黏成一個 word,不能錨定結尾)
 LEFT_TOL = 3.0       # 靠左排版的欄界:下一欄起點往左這麼多(實測值與表頭起點差 0~1pt)
+# 表頭置中、內容靠左的欄:至少這麼多列共用同一個起點、而且字數有這麼多種(見 anchor_edges)
+ANCHOR_MIN, ANCHOR_LENS = 5, 3
 _DRIVE_RE = re.compile(r"^https?://drive\.google\.com/file/d/([\w-]+)", re.I)
 
 # ---- LAPGO 選手名單版面 ----
@@ -192,10 +194,36 @@ def is_left_aligned(cols):
     return "單號" not in names and any(n.startswith("繳費狀況") for n in names)
 
 
-def assign(row, cols):
+def anchor_edges(rows, cols):
+    """同一個表頭底下全部資料列 → 修正過的欄界。
+
+    有些報名結果是**表頭置中、內容靠左**:隊名格的起點在表頭左邊,會落到中點界線的
+    左側而併進選手格,解出「林靖庭臺體大極限」(255140 隊名起點 307.0、界線 307.5;
+    329591 是 314.7 對 317.0)。列數照樣對得上宣告,所以覆蓋率守門看不出來。
+
+    判準是**同一個 x 起點底下有好幾種字數** —— 置中排版時起點跟著字數跑,只有靠左才會
+    這樣;而且它在本欄表頭起點的右邊,所以只能是下一欄的起點。界線只往左移,不往右。
+    """
+    edges = bounds(cols)
+    if is_left_aligned(cols):
+        return edges
+    seen = defaultdict(list)
+    for row in rows:
+        for x, txt in row:
+            seen[round(x, 1)].append(txt)
+    anchors = [(len(v), x) for x, v in seen.items()
+               if len(v) >= ANCHOR_MIN and len({len(t) for t in v}) >= ANCHOR_LENS]
+    out = []
+    for (x0, _n), (edge, cname) in zip(cols, edges):
+        near = [a for a in anchors if x0 + LEFT_TOL < a[1] < edge]
+        out.append((max(near)[1] - LEFT_TOL if near else edge, cname))
+    return out
+
+
+def assign(row, cols, edges=None):
     """一列文字依欄位界線切欄 → {欄名: [字, ...]}。"""
     out = defaultdict(list)
-    edges = bounds(cols)
+    edges = edges or bounds(cols)
     for x0, txt in row:
         for edge, cname in edges:
             if x0 < edge:
@@ -358,10 +386,15 @@ def parse_pdf(doc):
                 continue
             if not cols:
                 continue
-            cells = assign(row, cols)
-            if not is_data_row(cells):
+            if not is_data_row(assign(row, cols)):
                 continue
-            rows.append((group, cells, tuple(cols)))
+            rows.append((group, row, tuple(cols)))
+    # 欄界要看過同一個表頭底下所有的列才定得出來(見 anchor_edges)
+    by_head = defaultdict(list)
+    for _g, row, head in rows:
+        by_head[head].append(row)
+    edges = {head: anchor_edges(rs, head) for head, rs in by_head.items()}
+    rows = [(g, assign(row, head, edges[head]), head) for g, row, head in rows]
     # 組別標頭偶爾印在該組前幾列之後(309251 的「國小低年級組男子單打 共22組」排在
     # 該組第 3 列,前兩位男生被算進女單:7 vs 5、20 vs 22)。每列自己的「項目」欄
     # 是本份宣告過的組名時以它為準;要等整份讀完,宣告才齊(標頭正是晚到的那個)
